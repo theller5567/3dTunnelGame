@@ -1,9 +1,16 @@
+// Core Three.js library
 import * as THREE from 'three';
+// Mouse orbit controls (disabled for gameplay; useful for debug)
 import { OrbitControls } from 'jsm/controls/OrbitControls.js';
+// Spline path describing the tunnel route
 import spline from './spline.js';
+// Postprocessing composer and passes
 import { EffectComposer } from 'jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'jsm/postprocessing/UnrealBloomPass.js';
+import { CloudSystem } from './src/clouds.js';
+import { createCircleSpriteTexture } from './src/utils.js';
+import { ColladaLoader } from 'jsm/loaders/ColladaLoader.js';
 
 const w = window.innerWidth;
 const h = window.innerHeight;
@@ -13,11 +20,11 @@ const aspect = w / h;
 const near = 0.1;
 const far = 1000;
 let score = 0;
+let streak = 0;           // consecutive positive gains without losses
+let multiplier = 1;       // score multiplier (>=1). 5-streak -> x2
+const STREAK_FOR_X2 = 5;  // threshold to activate x2
 const scoreText = document.querySelector('.score-value');
 const h1Text = document.querySelector('h1');
-const WHITE = new THREE.Color(0xffffff);
-const TMP_COLOR = new THREE.Color();
-const TMP_HSL = { h: 0, s: 0, l: 0 };
 // scroll-controlled speed
 const SPEED_MIN = 0.09;
 const SPEED_MAX = 0.2;
@@ -35,7 +42,7 @@ const scene = new THREE.Scene();
   }
 
   function updateScore() {
-    scoreText.textContent = score;
+    scoreText.textContent = `${score}  x${multiplier}`;
   }
 
   //fade out the h1Text after 2 seconds
@@ -48,6 +55,7 @@ const renderer = new THREE.WebGLRenderer({antialias: true});
 renderer.setSize(w, h, true);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMappingExposure = 1.25;
 document.body.appendChild(renderer.domElement);
 
 
@@ -66,7 +74,59 @@ const lateralVelocity = new THREE.Vector2(0, 0);
 const lateralStiffness = 20; // attraction to target (higher = snappier)
 const lateralDamping = 10;   // damping factor (higher = less oscillation)
 const lookAtSmoothed = new THREE.Vector3();
-const prevCamPos = new THREE.Vector3();
+const prevPlayerPos = new THREE.Vector3();
+const player = new THREE.Group();
+scene.add(player);
+let playerLoaded = false;
+let playerDistance = 0.3; // distance in front of camera to place the player model
+// Ship tuning knobs – adjust these to fix orientation/placement
+let shipScale = 0.02;     // overall scale of the ship
+let shipYaw = 0;   // Y rotation (radians)
+let shipPitch = -(Math.PI / 2)  ;           // X rotation (radians)
+let shipRoll = Math.PI / 2;            // Z rotation (radians)
+let shipOffsetX = 0;         // local X offset
+let shipOffsetY = 0;         // local Y offset
+let shipOffsetZ = 0;         // local Z offset (forward/back relative to ship)
+let shipBankFactor = 0.6;    // roll responsiveness to lateral lean (radians at full lean)
+let shipPitchFactor = 0.4;   // pitch responsiveness to vertical lean (radians at full lean)
+let shipForwardAdjustY = Math.PI; // add 180° yaw so nose points away from camera
+
+// Load player model (COLLADA)
+const colladaLoader = new ColladaLoader();
+colladaLoader.load('assets/models/ship-new.dae', (collada) => {
+    const model = collada.scene || collada;
+    // scale to fit inside tube comfortably
+    model.scale.set(shipScale, shipScale, shipScale);
+    // Base orientation: set pitch/yaw/roll here; player.lookAt keeps nose forward
+    // Extra yaw to ensure nose points away from camera along tunnel
+    model.rotation.set(shipPitch, shipYaw + shipForwardAdjustY, shipRoll);
+    // If the model uses basic materials, ensure visible color
+    model.traverse((obj) => {
+      if (obj.isMesh && obj.material) {
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach((m) => {
+          if (m.color && m.color.getHex && m.color.getHex() === 0x000000) m.color.setHex(0x6666ff);
+          if (m.emissive) {
+            m.emissive.setHex(0x111111);
+            if (typeof m.emissiveIntensity === 'number') m.emissiveIntensity = 0.8;
+          }
+          m.needsUpdate = true;
+        });
+      }
+    });
+    player.add(model);
+    playerLoaded = true;
+});
+
+// Lights attached to the player so the model is clearly visible
+const playerLight = new THREE.PointLight(0xffffff, 3.0, 10, 1);
+playerLight.position.set(0, 0.15, 0.3);
+player.add(playerLight);
+const playerBackLight = new THREE.PointLight(0x88aaff, 1.5, 8, 1);
+playerBackLight.position.set(0, -0.1, -0.4);
+player.add(playerBackLight);
+const playerHemi = new THREE.HemisphereLight(0xffffff, 0x334455, 1.0);
+player.add(playerHemi);
 
 function onPointerMove(e){
     const rect = renderer.domElement.getBoundingClientRect();
@@ -78,7 +138,7 @@ function onPointerMove(e){
 
 window.addEventListener('pointermove', onPointerMove, false);
 
-// wheel to adjust forward speed
+// Scrollwheel to adjust forward speed
 function onWheel(e){
     const delta = Math.sign(e.deltaY) * -0.05; // up = faster, down = slower
     speedTarget = THREE.MathUtils.clamp(speedTarget + delta, SPEED_MIN, SPEED_MAX);
@@ -87,27 +147,6 @@ window.addEventListener('wheel', onWheel, { passive: true });
 
 
 // reusable soft-circle texture for particles
-function createCircleSpriteTexture(size) {
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    const cx = size / 2;
-    const cy = size / 2;
-    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, cx);
-    grd.addColorStop(0.0, 'rgba(255,255,255,1)');
-    grd.addColorStop(1.0, 'rgba(255,255,255,0)');
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, size, size);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.generateMipmaps = true;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.needsUpdate = true;
-    return tex;
-}
-
 const PARTICLE_TEXTURE = createCircleSpriteTexture(64);
 
 const curve = spline.getPoints(100);
@@ -144,90 +183,34 @@ const lineMaterial = new THREE.LineBasicMaterial({color: 0xffffff});
 const tubeLines = new THREE.LineSegments(edgesGeometry, lineMaterial);
 scene.add(tubeLines);
 
-// flash tube wireframe color on score changes
-const tubeWireOriginalLineColor = lineMaterial.color.getHex();
-const tubeWireOriginalMeshColor = tubeMaterial.color.getHex();
-let tubeWireFlashTimeout = null;
-function flashTubeWire(colorHex, durationMs = 1000) {
-  lineMaterial.color.setHex(colorHex);
-  tubeMaterial.color.setHex(colorHex);
-  if (tubeWireFlashTimeout) clearTimeout(tubeWireFlashTimeout);
-  tubeWireFlashTimeout = setTimeout(() => {
-    lineMaterial.color.setHex(tubeWireOriginalLineColor);
-    tubeMaterial.color.setHex(tubeWireOriginalMeshColor);
-  }, durationMs);
-}
+// Tube color is driven by music (no score-based flashes)
 
-// clouds inside the tube using soft sprites
-const cloudsGroup = new THREE.Group();
-scene.add(cloudsGroup);
-// global color override for all clouds; set to THREE.Color or null
-let cloudColorOverride = null;
-function setCloudsColor(colorOrH, s, l) {
-  // HSL overload: setCloudsColor(h, s, l)
-  if (
-    typeof colorOrH === 'number' && typeof s === 'number' && typeof l === 'number'
-  ) {
-    TMP_COLOR.setHSL(colorOrH, s, l);
-    cloudColorOverride = TMP_COLOR.clone();
-    return;
-  }
-  // Reset override
-  if (colorOrH == null) {
-    cloudColorOverride = null;
-    return;
-  }
-  // THREE.Color instance
-  if (colorOrH && colorOrH.isColor) {
-    cloudColorOverride = colorOrH.clone();
-    return;
-  }
-  // Hex or CSS string
-  cloudColorOverride = new THREE.Color(colorOrH);
-}
-
-function addCloud(u, radius, size, colorHex, opacity) {
-  const mat = new THREE.SpriteMaterial({
-    map: PARTICLE_TEXTURE,
-    color: colorHex,
-    transparent: true,
-    opacity,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    premultipliedAlpha: false
-  });
-  const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(size, size, 1);
-
-  const idx = Math.floor(u * frameSegments);
-  const normal = frames.normals[idx % frameSegments].clone();
-  const binormal = frames.binormals[idx % frameSegments].clone();
-  const pos = tubeGeometry.parameters.path.getPointAt(u);
-  const angle = Math.random() * Math.PI * 2;
-  const offset = normal.multiplyScalar(Math.cos(angle) * radius)
-    .add(binormal.multiplyScalar(Math.sin(angle) * radius));
-  sprite.position.copy(pos).add(offset);
-  sprite.userData = {
-    u,
-    angle,
-    radius,
-    speed: (Math.random() * 0.5 + 0.5) * 0.02,
-    sway: Math.random() * 0.2 + 0.05,
-    phase: Math.random() * Math.PI * 2
-  };
-  cloudsGroup.add(sprite);
-}
-
-function createClouds(count = 5020) {
-  for (let i = 0; i < count; i++) {
-    const u = Math.random();
-    const r = THREE.MathUtils.lerp(0.15, 0.42, Math.random()); // stay inside tube radius 0.5
-    const size = THREE.MathUtils.lerp(0.25, 1.0, Math.random());
-    addCloud(u, r, size, 0xffffff, 0.05);
+// Score helper that applies streak and multiplier rules
+function addScore(delta) {
+  if (delta > 0) {
+    streak += 1;
+    if (streak >= STREAK_FOR_X2) multiplier = 2; // simple rule: 5-in-a-row => x2
+    score += delta * multiplier;
+    // play point SFX on positive score
+    if (sfxPointReady && !bgmMuted) {
+      // restart SFX if it was still playing
+      if (sfxPoint.isPlaying) sfxPoint.stop();
+      sfxPoint.play();
+    }
+  } else if (delta < 0) {
+    streak = 0;
+    multiplier = 1;
+    score += delta; // penalties are not multiplied
+    if (sfxExplosionReady && !bgmMuted) {
+      sfxExplosion.play();
+    }
   }
 }
 
-createClouds(120);
+// clouds system
+const cloudSystem = new CloudSystem(scene, tubeGeometry.parameters.path, frames, { additive: true });
+cloudSystem.populate(320, 0.5);
+const setCloudsColor = (...args) => cloudSystem.setColor(...args);
 
 
 //create random 3d boxes along the camera path inside the tube
@@ -275,8 +258,11 @@ const particleSystems = [];
 function disintegrateBox(boxMesh) {
     if (!boxMesh || boxMesh.userData.disintegrated) return;
     boxMesh.userData.disintegrated = true;
-    score++;
-    flashTubeWire(0x00ff00, 1000);
+    addScore(-1);
+    if (sfxExplosionReady && !bgmMuted) {
+      sfxExplosion.play();
+    }
+    // removed score-based tube flash; color now driven by music
     // parameters
     const particleCount = 500;
     const duration = 1.0; // seconds
@@ -386,36 +372,14 @@ function checkBoxesForDisintegration() {
     }
 }
 
+// cloud system update
 function updateClouds(t, dt) {
-  for (let i = 0; i < cloudsGroup.children.length; i++) {
-    const s = cloudsGroup.children[i];
-    const data = s.userData;
-    // drift along tube and sway radially
-    data.u = (data.u + data.speed * dt) % 1;
-    const idx = Math.floor(data.u * frameSegments);
-    const normal = frames.normals[idx % frameSegments];
-    const binormal = frames.binormals[idx % frameSegments];
-    const pos = tubeGeometry.parameters.path.getPointAt(data.u);
-    const swayR = data.radius + Math.sin(t * 0.001 + data.phase) * data.sway;
-    const x = Math.cos(data.angle) * swayR;
-    const y = Math.sin(data.angle) * swayR;
-    s.position.copy(pos)
-      .add(normal.clone().multiplyScalar(x))
-      .add(binormal.clone().multiplyScalar(y));
-    // subtle opacity pulse
-    s.material.opacity = 0.03 + Math.abs(Math.sin(t * 0.0005 + data.phase)) * 0.05;
-    // tint: if override provided, use it directly; else follow light color directly
-    if (cloudColorOverride) {
-      s.material.color.copy(cloudColorOverride);
-    } else {
-      s.material.color.copy(light.color);
-    }
-  }
+  cloudSystem.update(t, dt, light.color, musicEnergy, musicBeat);
 }
 
 function checkSpheresForPenalty() {
-  const camPos = camera.position;
-  const prevPos = prevCamPos;
+  const camPos = player.position;
+  const prevPos = prevPlayerPos;
   const movement = new THREE.Vector3().subVectors(camPos, prevPos);
   const movementLenSq = movement.lengthSq();
   for (let i = spheres.length - 1; i >= 0; i--) {
@@ -428,8 +392,7 @@ function checkSpheresForPenalty() {
     const radius = baseRadius + 0.1;
     // quick check current pos
     if (s.position.distanceTo(camPos) <= radius) {
-      score--;
-      flashTubeWire(0xff0000, 500);
+      addScore(1);
       scene.remove(s);
       if (s.geometry) s.geometry.dispose();
       if (s.material) s.material.dispose();
@@ -446,8 +409,7 @@ function checkSpheresForPenalty() {
       const c = m.lengthSq() - radius * radius;
       if (c <= 0) {
         // started inside sphere
-        score--;
-        flashTubeWire(0xff0000, 500);
+        addScore(1);
         scene.remove(s);
         if (s.geometry) s.geometry.dispose();
         if (s.material) s.material.dispose();
@@ -458,8 +420,7 @@ function checkSpheresForPenalty() {
       if (discr >= 0) {
         const tHit = -b - Math.sqrt(discr);
         if (tHit >= 0 && tHit <= segLen) {
-          score--;
-          flashTubeWire(0xff0000, 500);
+          addScore(1);
           scene.remove(s);
           if (s.geometry) s.geometry.dispose();
           if (s.material) s.material.dispose();
@@ -477,12 +438,134 @@ scene.add(ambient);
 const light = new THREE.PointLight(0xffffff, 2, 50, 2);
 camera.add(light);
 
+// Background music (starts on first user interaction)
+const audioListener = new THREE.AudioListener();
+camera.add(audioListener);
+const bgm = new THREE.Audio(audioListener);
+const audioLoader = new THREE.AudioLoader();
+let bgmReady = false;
+let bgmMuted = false;
+let bgmBaseVolume = 0.3; // default volume when unmuted
+
+// Point SFX (played when user scores a point)
+const sfxPoint = new THREE.Audio(audioListener);
+let sfxPointReady = false;
+const sfxExplosion = new THREE.Audio(audioListener);
+let sfxExplosionReady = false;
+
+// Music analysis
+let musicAnalyser = null;   // Web Audio AnalyserNode
+let musicFreqData = null;   // Uint8Array for frequency bins
+let musicEnergy = 0;     // 0..1
+let musicEnergyMA = 0;   // moving average
+let musicCentroid = 0;   // 0..1 (low->high)
+let musicBeat = false;   // beat detected this frame
+let beatLightBoost = 0;  // decays each frame
+const ENERGY_SMOOTH = 0.1;
+const BEAT_THRESHOLD = 0.18;
+const BEAT_COOLDOWN_MS = 200;
+let lastBeatMs = 0;
+
+audioLoader.load('assets/soundFX/retro-gaming-271301.mp3', (buffer) => {
+    bgm.setBuffer(buffer);
+    bgm.setLoop(true);
+    bgm.setVolume(bgmMuted ? 0 : bgmBaseVolume);
+    bgmReady = true;
+    // create analyser once bgm is ready (Web Audio API)
+    const ctx = audioListener.context;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256; // 128 bins
+    musicFreqData = new Uint8Array(analyser.frequencyBinCount);
+    // connect bgm to analyser
+    bgm.source.connect(analyser);
+    analyser.connect(ctx.destination); // keep audio chain intact
+    musicAnalyser = analyser;
+});
+
+
+audioLoader.load('assets/soundFX/lazer-gun.mp3', (buffer) => {
+  sfxPoint.setBuffer(buffer);
+  sfxPoint.setLoop(false);
+  sfxPoint.setVolume(bgmMuted ? 0 : 0.7);
+  sfxPointReady = true;
+});
+
+audioLoader.load('assets/soundFX/explosion-9-340460.mp3', (buffer) => {
+  sfxExplosion.setBuffer(buffer);
+  sfxExplosion.setLoop(false);
+  sfxExplosion.setVolume(bgmMuted ? 0 : 0.3);
+  sfxExplosionReady = true;
+});
+
+function tryStartBgm() {
+    if (!bgmReady) return;
+    const ctx = audioListener.context;
+    if (ctx && ctx.state === 'suspended') {
+        ctx.resume();
+    }
+    if (!bgm.isPlaying) {
+        bgm.play();
+    }
+}
+
+// Start audio on any user gesture (required by browsers)
+window.addEventListener('pointerdown', tryStartBgm);
+window.addEventListener('keydown', tryStartBgm);
+
+// Press 'M' to toggle mute/unmute
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'm' || e.key === 'M') {
+        bgmMuted = !bgmMuted;
+        if (bgm.isPlaying || bgmReady) {
+            bgm.setVolume(bgmMuted ? 0 : bgmBaseVolume);
+        }
+    if (sfxPointReady) {
+      sfxPoint.setVolume(bgmMuted ? 0 : 0.7);
+    }
+    if (sfxExplosionReady) {
+      sfxExplosion.setVolume(bgmMuted ? 0 : 0.7);
+    }
+    }
+});
+
+function updateMusicMetrics(nowMs) {
+  musicBeat = false;
+  if (!musicAnalyser) return;
+  // overall energy
+  musicAnalyser.getByteFrequencyData(musicFreqData);
+  let sum = 0;
+  for (let i = 0; i < musicFreqData.length; i++) sum += musicFreqData[i];
+  const avg = sum / musicFreqData.length; // 0..255
+  const e = Math.max(0, Math.min(1, avg / 255));
+  musicEnergyMA += (e - musicEnergyMA) * ENERGY_SMOOTH;
+  musicEnergy = e;
+  // rough spectral centroid
+  let wsum = 0, asum = 0;
+  for (let i = 0; i < musicFreqData.length; i++) { const a = musicFreqData[i]; asum += a; wsum += a * i; }
+  musicCentroid = asum > 0 ? (wsum / asum) / (musicFreqData.length - 1) : 0;
+  // beat detection (energy spike over moving average)
+  if (e - musicEnergyMA > BEAT_THRESHOLD && nowMs - lastBeatMs > BEAT_COOLDOWN_MS) {
+    musicBeat = true;
+    lastBeatMs = nowMs;
+    beatLightBoost = 0.5; // spike added to light intensity
+  } else {
+    beatLightBoost = Math.max(0, beatLightBoost * 0.9);
+  }
+}
+
 //create a function that changes the color of the light randomly as camera moves
 //color changes should change slowly and smoothly
 function changeLightColor(t) {
-    const h = (t * 0.0001) % 1; // smooth hue cycle
+    // base hue from time, lightly biased by spectral centroid
+    const baseH = (t * 0.0001) % 1;
+    const h = baseH * 0.9 + musicCentroid * 0.1;
     light.color.setHSL(h, 1, 0.5);
-    setCloudsColor(h, 1, 0.5)
+    setCloudsColor(h, 1, 0.5);
+    // intensity reacts to energy and beats
+    light.intensity = 2 + 1.2 * musicEnergy + beatLightBoost;
+    // drive tube/wireframe color by music hue as well
+    lineMaterial.color.setHSL(h, 1, 0.6);
+    tubeMaterial.color.setHSL(h, 1, 0.6);
 }
 
 
@@ -499,8 +582,8 @@ function updateCamera(t, dt) {
 
     // smooth mouse input with gentle easing (cubic for fine center control)
     const ease = (v) => Math.sign(v) * Math.pow(Math.abs(v), 0.7);
-    mouseSmoothed.x += (ease(mouseTarget.x) - mouseSmoothed.x) * 0.22;
-    mouseSmoothed.y += (ease(mouseTarget.y) - mouseSmoothed.y) * 0.22;
+    mouseSmoothed.x += (ease(mouseTarget.x) - mouseSmoothed.x) * 0.5;
+    mouseSmoothed.y += (ease(mouseTarget.y) - mouseSmoothed.y) * 0.5;
 
     // get Frenet frame (normal/binormal) at this segment
     const idx = Math.floor(p * frameSegments);
@@ -523,8 +606,36 @@ function updateCamera(t, dt) {
     const offset = normal.clone().multiplyScalar(lateralOffset.x)
         .add(binormal.clone().multiplyScalar(lateralOffset.y));
 
-    const camPos = pos.clone().add(offset);
-    prevCamPos.copy(camera.position);
+    // Keep camera centered on the spline (no lateral mouse offset)
+    const camPos = pos.clone();
+    // position player in front of camera along the forward vector
+    const forward = new THREE.Vector3().subVectors(lookAt, camPos).normalize();
+    // Compute viewport-aligned axes so cursor mapping is consistent
+    const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+    const upScreen = new THREE.Vector3().crossVectors(right, forward).normalize();
+    // Invert vertical so moving cursor up moves ship up on screen
+    const offsetScreen = right.clone().multiplyScalar(mouseSmoothed.x * crossRadius)
+      .add(upScreen.clone().multiplyScalar(-mouseSmoothed.y * crossRadius));
+    // Ship moves within the tube by mouse, using screen-aligned axes
+    const playerPos = camPos.clone()
+      .add(right.clone().multiplyScalar(shipOffsetX))
+      .add(upScreen.clone().multiplyScalar(shipOffsetY))
+      .add(forward.clone().multiplyScalar(playerDistance + shipOffsetZ))
+      .add(offsetScreen);
+    prevPlayerPos.copy(player.position);
+    player.position.copy(playerPos);
+    player.lookAt(lookAt);
+    // Ensure the ship points away from the camera (Three.js lookAt points -Z toward target)
+    // Flip around Y so the ship's nose faces forward along the tunnel
+    player.rotateY(Math.PI);
+    // Bank the ship based on lateral lean (left/right) inside the tube
+    const leanX = THREE.MathUtils.clamp(mouseSmoothed.x, -1, 1);
+    const leanY = -THREE.MathUtils.clamp(mouseSmoothed.y, -1, 1);
+    const bankAngle = -leanX * shipBankFactor;
+    const pitchAngle = leanY * shipPitchFactor;
+    const bankQuat = new THREE.Quaternion().setFromAxisAngle(forward, bankAngle);
+    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, pitchAngle);
+    player.quaternion.multiply(bankQuat).multiply(pitchQuat);
     camera.position.copy(camPos);
     // smooth look-at for reduced jitter
     lookAtSmoothed.lerp(lookAt, 0.35);
@@ -536,6 +647,7 @@ function animateLoop(t = 0){
     requestAnimationFrame(animateLoop);
     const dt = ((t - prevTimeMs) * 0.001) || 0;
     prevTimeMs = t;
+    updateMusicMetrics(t);
     updateCamera(t, dt);
     changeLightColor(t);
     checkBoxesForDisintegration();
