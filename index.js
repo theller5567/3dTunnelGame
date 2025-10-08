@@ -37,10 +37,12 @@ const restartButton = document.querySelector('.restart-button');
 let isRunning = false; // game loop state
 let hasStarted = false; // has the game been started at least once
 let rafId = 0; // current animation frame id
-let hazardsShown = false; // visibility gate for boxes/spheres at game start
-const PLAYER_RADIUS = 0.03; // approximate collision radius for the ship
-let pendingStart = false; // start requested but waiting for assets
-const TOTAL_ASSETS = 4; // 1 model + 3 audio files
+ let hazardsShown = false; // visibility gate for boxes/spheres at game start
+ const PLAYER_RADIUS = 0.03; // approximate collision radius for the ship
+ // Feature flag: optionally skip loading the ship model so it doesn't need to be in git
+ const USE_SHIP_MODEL = false;
+ let pendingStart = false; // start requested but waiting for assets
+ let TOTAL_ASSETS = USE_SHIP_MODEL ? 4 : 3; // model (optional) + 3 audio files
 let loadedAssets = 0;
 function updatePreloaderProgress(extra = 0){
   const pct = Math.max(0, Math.min(100, Math.round(((loadedAssets + extra) / TOTAL_ASSETS) * 100)));
@@ -107,8 +109,14 @@ const scene = new THREE.Scene();
     // Initialize preloader UI to 0%
     if (loaderPctEl) loaderPctEl.textContent = '0%';
     if (loaderFillEl) loaderFillEl.style.width = '0%';
-    // Begin loading assets; game will start automatically when done
-    loadModel();
+  // Begin loading assets; game will start automatically when done
+    if (USE_SHIP_MODEL) {
+      loadModel();
+    } else {
+      // If skipping model, mark as effectively loaded so progress reaches 100%
+      // immediately account for the missing model slot
+      // Note: TOTAL_ASSETS is already reduced when USE_SHIP_MODEL is false
+    }
     loadAudio();
   });
 
@@ -125,7 +133,7 @@ const scene = new THREE.Scene();
       pauseButton.textContent = 'Resume';
     } else {
       resumeGame();
-      pauseButton.textContent = 'Pause';
+      pauseButton.textContent = 'Pause'; 
     }
   });
 
@@ -215,6 +223,13 @@ colladaLoader.load('assets/models/ship-new.dae', (collada) => {
     });
     player.add(model);
     playerLoaded = true;
+    markAssetLoaded();
+}, (xhr) => {
+    // progress handler (optional)
+}, (error) => {
+    console.warn('Model failed to load, continuing without it:', error);
+    // Ensure the preloader can finish
+    playerLoaded = false;
     markAssetLoaded();
 });
 }
