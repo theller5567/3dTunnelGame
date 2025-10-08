@@ -9,6 +9,7 @@ import { EffectComposer } from 'jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'jsm/postprocessing/UnrealBloomPass.js';
 import { CloudSystem } from './src/clouds.js';
+import { GateSystem } from './src/gates.js';
 import { createCircleSpriteTexture } from './src/utils.js';
 import { ColladaLoader } from 'jsm/loaders/ColladaLoader.js';
 
@@ -23,9 +24,12 @@ let score = 0;
 let streak = 0;           // consecutive positive gains without losses
 let multiplier = 1;       // score multiplier (>=1). 5-streak -> x2
 const STREAK_FOR_X2 = 5;  // threshold to activate x2
-const SPAWN_START_U = 0.15; // 0.0..1.0 param along spline; 0.15 ≈ 15% down the tube
+let level = 1;            // current level (starts at 1)
+let nextLevelScore = 50;  // points needed for next level
+const SPAWN_START_U = 0.12; // 0.0..1.0 param along spline; 0.15 ≈ 15% down the tube
 
 const scoreText = document.querySelector('.score-value');
+const levelUpEl = document.querySelector('.level-up');
 const h1Text = document.querySelector('h1');
 const startButton = document.querySelector('.start-button');
 const container = document.querySelector('.container');
@@ -34,13 +38,17 @@ const loaderPctEl = document.getElementById('loader-pct');
 const loaderFillEl = document.getElementById('loader-fill');
 const pauseButton = document.querySelector('.pause-button');
 const restartButton = document.querySelector('.restart-button');
+const header = document.querySelector('header');
+const countdown = document.querySelector('.countdown');
+const COUNTDOWN_SECONDS = 10; // keep obstacles spawn in sync with countdown
+
 let isRunning = false; // game loop state
 let hasStarted = false; // has the game been started at least once
 let rafId = 0; // current animation frame id
  let hazardsShown = false; // visibility gate for boxes/spheres at game start
  const PLAYER_RADIUS = 0.03; // approximate collision radius for the ship
  // Feature flag: optionally skip loading the ship model so it doesn't need to be in git
- const USE_SHIP_MODEL = false;
+ const USE_SHIP_MODEL = true;
  let pendingStart = false; // start requested but waiting for assets
  let TOTAL_ASSETS = USE_SHIP_MODEL ? 4 : 3; // model (optional) + 3 audio files
 let loadedAssets = 0;
@@ -94,6 +102,7 @@ const scene = new THREE.Scene();
   startButton.addEventListener('click', (e) => {
     e.stopPropagation(); // prevent global click toggle from pausing immediately
     container.classList.add('start');
+    header.style.display = 'flex';
     h1Text.style.opacity = 0;
     startButton.style.display = 'none';
     controls.enabled = true;
@@ -140,9 +149,10 @@ const scene = new THREE.Scene();
   restartButton.addEventListener('click', (e) => {
     e.stopPropagation();
     pauseGame();
-    // reset score on restart
-    score = 0; streak = 0; multiplier = 1; updateScore();
-    tryStartBgm();
+    // stop and reset BGM so it starts from the beginning
+    if (bgm && bgm.isPlaying) bgm.stop();
+    // fully restart game state
+    resetToStartOfSpline();
     startNewGame();
     pauseButton.textContent = 'Pause';
   });
@@ -234,6 +244,24 @@ colladaLoader.load('assets/models/ship-new.dae', (collada) => {
 });
 }
 
+// Show a 5→1 countdown overlay, then hide. Spawning/hazards handled elsewhere
+function countDown(){
+    if (!countdown) return;
+    countdown.style.display = 'flex';
+    let value = COUNTDOWN_SECONDS;
+    const update = () => {
+        if (!countdown) return;
+        countdown.textContent = String(value);
+        if (value <= 1) {
+            setTimeout(() => { if (countdown) countdown.style.display = 'none'; }, 1000);
+        } else {
+            value -= 1;
+            setTimeout(update, 1000);
+        }
+    };
+    update();
+}
+
 // Lights attached to the player so the model is clearly visible
 const playerLight = new THREE.PointLight(0xffffff, 3.0, 10, 1);
 playerLight.position.set(0, 0.15, 0.3);
@@ -321,7 +349,34 @@ function addScore(delta) {
       sfxExplosion.play();
     }
   }
+  // level progression
+  if (score >= nextLevelScore) {
+    onLevelUp();
+  }
 }
+
+function onLevelUp(){
+  level += 1;
+  nextLevelScore += 50; // increase threshold by 50 each level
+  increaseDifficulty();
+  if (levelUpEl) {
+    levelUpEl.style.display = 'flex';
+    levelUpEl.textContent = `Level ${level}!`;
+    setTimeout(() => { if (levelUpEl) levelUpEl.style.display = 'none'; }, 2000);
+  }
+}
+
+function increaseDifficulty(){
+  // increase speed target gently up to cap
+  speedTarget = Math.min(SPEED_MAX, speedTarget + 0.02);
+  // add more obstacles mid-run
+  spawnObstacles(50, 60);
+  // introduce gates
+  gateSystem.spawn(10);
+}
+
+// Gates (modularized)
+const gateSystem = new GateSystem(scene, tubeGeometry.parameters.path, SPAWN_START_U);
 
 // clouds system
 const cloudSystem = new CloudSystem(scene, tubeGeometry.parameters.path, frames, { additive: true });
@@ -349,6 +404,7 @@ function clearObstacles(){
     if (s.material) s.material.dispose();
   }
   spheres.length = 0;
+  gateSystem.clear();
 }
 
 function spawnObstacles(boxCount = 150, sphereCount = 170){
@@ -545,6 +601,15 @@ function updateClouds(t, dt) {
   cloudSystem.update(t, dt, light.color, musicEnergy, musicBeat);
 }
 
+// Detect gate passes and grant bonus
+function checkGates(){
+  if (!hazardsShown) return;
+  const prev = prevPlayerPos;
+  const pos = player.position;
+  const passed = gateSystem.checkPasses(prev, pos, () => addScore(5));
+  return passed;
+}
+
 function checkSpheresForPenalty() {
   if (!hazardsShown) return;
   const camPos = player.position;
@@ -600,6 +665,41 @@ function checkSpheresForPenalty() {
   }
 }
 
+// Reset ship/camera to the start of the spline (fresh-run pose)
+function resetToStartOfSpline(){
+  pathU = 0;
+  // reset movement smoothing/state
+  mouseTarget.x = 0; mouseTarget.y = 0;
+  mouseSmoothed.x = 0; mouseSmoothed.y = 0;
+  lateralOffset.set(0, 0);
+  lateralVelocity.set(0, 0);
+  // reset speed to base
+  speedTarget = 0.1;
+  speed = 0.1;
+  // place camera and player at start
+  const p = 0;
+  const path = tubeGeometry.parameters.path;
+  const camPos = path.getPointAt(p);
+  const lookAt = path.getPointAt((p + 0.03) % 1);
+  const forward = new THREE.Vector3().subVectors(lookAt, camPos).normalize();
+  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+  const upScreen = new THREE.Vector3().crossVectors(right, forward).normalize();
+  camera.position.copy(camPos);
+  lookAtSmoothed.copy(lookAt);
+  camera.lookAt(lookAtSmoothed);
+  // compute initial player position in front of camera with offsets
+  const playerPos = camPos.clone()
+    .add(right.clone().multiplyScalar(shipOffsetX))
+    .add(upScreen.clone().multiplyScalar(shipOffsetY))
+    .add(forward.clone().multiplyScalar(playerDistance + shipOffsetZ));
+  prevPlayerPos.copy(playerPos);
+  player.position.copy(playerPos);
+  player.lookAt(lookAt);
+  player.rotation.x = 0;
+  player.rotation.z = 0;
+  player.rotateY(Math.PI);
+}
+
 //attach a light to the camera position
 scene.add(camera);
 const ambient = new THREE.AmbientLight(0x202020, 1);
@@ -624,9 +724,7 @@ const sfxExplosion = new THREE.Audio(audioListener);
 let sfxExplosionReady = false;
 
 function loadAudio(){
-
 // Music analysis (declared earlier)
-
 audioLoader.load('assets/soundFX/retro-gaming-271301.mp3', (buffer) => {
     bgm.setBuffer(buffer);
     bgm.setLoop(true);
@@ -821,6 +919,7 @@ function animateLoop(t = 0){
     changeLightColor(t);
     checkBoxesForDisintegration();
     checkSpheresForPenalty();
+    checkGates();
     updateParticles(dt);
     updateClouds(t, dt);
     composer.render();
@@ -837,7 +936,8 @@ function startGame(){
   // Delay hazards visibility for 2 seconds to give the player room
   hazardsShown = false;
   clearObstacles();
-  setTimeout(() => { hazardsShown = true; spawnObstacles(); }, 5000);
+  setTimeout(() => { hazardsShown = true; spawnObstacles(); }, COUNTDOWN_SECONDS * 1000);
+  countDown();
 }
 
 function pauseGame(){
@@ -860,5 +960,10 @@ function startNewGame(){
   score = 0; streak = 0; multiplier = 1; updateScore();
   hazardsShown = false;
   clearObstacles();
+  resetToStartOfSpline();
+  hasStarted = true;
+  isRunning = false; // ensure consistent start
+  // start fresh with countdown and synchronized spawn
   startGame();
+
 }
