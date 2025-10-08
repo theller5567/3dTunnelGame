@@ -23,8 +23,51 @@ let score = 0;
 let streak = 0;           // consecutive positive gains without losses
 let multiplier = 1;       // score multiplier (>=1). 5-streak -> x2
 const STREAK_FOR_X2 = 5;  // threshold to activate x2
+const SPAWN_START_U = 0.15; // 0.0..1.0 param along spline; 0.15 ≈ 15% down the tube
+
 const scoreText = document.querySelector('.score-value');
 const h1Text = document.querySelector('h1');
+const startButton = document.querySelector('.start-button');
+const container = document.querySelector('.container');
+const preloader = document.getElementById('preloader');
+const loaderPctEl = document.getElementById('loader-pct');
+const loaderFillEl = document.getElementById('loader-fill');
+const pauseButton = document.querySelector('.pause-button');
+const restartButton = document.querySelector('.restart-button');
+let isRunning = false; // game loop state
+let hasStarted = false; // has the game been started at least once
+let rafId = 0; // current animation frame id
+let hazardsShown = false; // visibility gate for boxes/spheres at game start
+const PLAYER_RADIUS = 0.03; // approximate collision radius for the ship
+let pendingStart = false; // start requested but waiting for assets
+const TOTAL_ASSETS = 4; // 1 model + 3 audio files
+let loadedAssets = 0;
+function updatePreloaderProgress(extra = 0){
+  const pct = Math.max(0, Math.min(100, Math.round(((loadedAssets + extra) / TOTAL_ASSETS) * 100)));
+  if (loaderPctEl) loaderPctEl.textContent = `${pct}%`;
+  if (loaderFillEl) loaderFillEl.style.width = `${pct}%`;
+}
+function markAssetLoaded(){
+  loadedAssets += 1;
+  updatePreloaderProgress();
+  if (loadedAssets >= TOTAL_ASSETS) {
+    if (preloader) preloader.classList.remove('show');
+    if (pendingStart) { tryStartBgm(); startGame(); pendingStart = false; }
+  }
+}
+
+// Music analysis state (declare early so functions can assign safely)
+let musicAnalyser = null;   // Web Audio AnalyserNode
+let musicFreqData = null;   // Uint8Array for frequency bins
+let musicEnergy = 0;     // 0..1
+let musicEnergyMA = 0;   // moving average
+let musicCentroid = 0;   // 0..1 (low->high)
+let musicBeat = false;   // beat detected this frame
+let beatLightBoost = 0;  // decays each frame
+const ENERGY_SMOOTH = 0.1;
+const BEAT_THRESHOLD = 0.18;
+const BEAT_COOLDOWN_MS = 200;
+let lastBeatMs = 0;
 // scroll-controlled speed
 const SPEED_MIN = 0.09;
 const SPEED_MAX = 0.2;
@@ -45,10 +88,56 @@ const scene = new THREE.Scene();
     scoreText.textContent = `${score}  x${multiplier}`;
   }
 
-  //fade out the h1Text after 2 seconds
-  setTimeout(() => {
+
+  startButton.addEventListener('click', (e) => {
+    e.stopPropagation(); // prevent global click toggle from pausing immediately
+    container.classList.add('start');
     h1Text.style.opacity = 0;
-  }, 2000);
+    startButton.style.display = 'none';
+    controls.enabled = true;
+    hasStarted = true;
+    if (preloader) preloader.classList.add('show');
+    if (container) container.style.display = 'none';
+    pendingStart = true;
+    // Arm audio context with a user gesture so playback will succeed after load
+    try {
+      const ctx = audioListener && audioListener.context;
+      if (ctx && ctx.state === 'suspended') ctx.resume();
+    } catch (err) {}
+    // Initialize preloader UI to 0%
+    if (loaderPctEl) loaderPctEl.textContent = '0%';
+    if (loaderFillEl) loaderFillEl.style.width = '0%';
+    // Begin loading assets; game will start automatically when done
+    loadModel();
+    loadAudio();
+  });
+
+  // Pause when mouse leaves the viewport and resume on enter
+  window.addEventListener('mouseleave', () => { if (hasStarted) pauseGame(); });
+  window.addEventListener('mouseenter', () => { if (hasStarted) resumeGame(); });
+
+  pauseButton.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!hasStarted) return;
+    if (preloader && preloader.classList.contains('show')) return;
+    if (isRunning) {
+      pauseGame();
+      pauseButton.textContent = 'Resume';
+    } else {
+      resumeGame();
+      pauseButton.textContent = 'Pause';
+    }
+  });
+
+  restartButton.addEventListener('click', (e) => {
+    e.stopPropagation();
+    pauseGame();
+    // reset score on restart
+    score = 0; streak = 0; multiplier = 1; updateScore();
+    tryStartBgm();
+    startNewGame();
+    pauseButton.textContent = 'Pause';
+  });
 
 
 const renderer = new THREE.WebGLRenderer({antialias: true});
@@ -92,7 +181,17 @@ let shipPitchFactor = 0.4;   // pitch responsiveness to vertical lean (radians a
 let shipForwardAdjustY = Math.PI; // add 180° yaw so nose points away from camera
 
 // Load player model (COLLADA)
-const colladaLoader = new ColladaLoader();
+// Shared loading manager to drive the preloader UI
+const assetLoadingManager = new THREE.LoadingManager();
+assetLoadingManager.onProgress = (url, itemsLoaded, itemsTotal) => {
+  const pct = Math.round((itemsLoaded / itemsTotal) * 100);
+  if (loaderPctEl) loaderPctEl.textContent = `${pct}%`;
+  if (loaderFillEl) loaderFillEl.style.width = `${pct}%`;
+};
+assetLoadingManager.onLoad = () => { /* progress handled by manual counters */ };
+
+const colladaLoader = new ColladaLoader(assetLoadingManager);
+function loadModel(){
 colladaLoader.load('assets/models/ship-new.dae', (collada) => {
     const model = collada.scene || collada;
     // scale to fit inside tube comfortably
@@ -116,7 +215,9 @@ colladaLoader.load('assets/models/ship-new.dae', (collada) => {
     });
     player.add(model);
     playerLoaded = true;
+    markAssetLoaded();
 });
+}
 
 // Lights attached to the player so the model is clearly visible
 const playerLight = new THREE.PointLight(0xffffff, 3.0, 10, 1);
@@ -213,42 +314,64 @@ cloudSystem.populate(320, 0.5);
 const setCloudsColor = (...args) => cloudSystem.setColor(...args);
 
 
-//create random 3d boxes along the camera path inside the tube
-//make the boxes have different sizes but true squares
+// Obstacles (spawned after a short delay at game start)
 const boxes = [];
-for (let i = 0; i < 150; i++) {
+const spheres = [];
+// Do not spawn obstacles in the first portion of the path so the ship has room
+
+function clearObstacles(){
+  for (let i = boxes.length - 1; i >= 0; i--) {
+    const b = boxes[i];
+    scene.remove(b);
+    if (b.geometry) b.geometry.dispose();
+    if (b.material) b.material.dispose();
+  }
+  boxes.length = 0;
+  for (let i = spheres.length - 1; i >= 0; i--) {
+    const s = spheres[i];
+    scene.remove(s);
+    if (s.geometry) s.geometry.dispose();
+    if (s.material) s.material.dispose();
+  }
+  spheres.length = 0;
+}
+
+function spawnObstacles(boxCount = 150, sphereCount = 170){
+  // Boxes
+  for (let i = 0; i < boxCount; i++) {
     const size = Math.random() * (0.1 - 0.01) + 0.01; // 0.01 .. 0.1
     const box = new THREE.BoxGeometry(size, size, size);
-    const pos = tubeGeometry.parameters.path.getPointAt(Math.random() * 0.99 + 0.01);
-    //offset the boxes x and y position randomly between -0.5 and 0.5
+    // pick a param u that is not near the start of the tube
+    const u = SPAWN_START_U + Math.random() * (1 - SPAWN_START_U);
+    const pos = tubeGeometry.parameters.path.getPointAt(u);
     pos.x += Math.random() * 0.5 - 0.25;
     pos.y += Math.random() * 0.5 - 0.25;
     const rotation = new THREE.Euler(Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI);
     const boxMaterial = new THREE.MeshPhongMaterial({color: 0xffffff, shininess: 100});
     const boxMesh = new THREE.Mesh(box, boxMaterial);
-    scene.add(boxMesh);
     boxes.push(boxMesh);
     boxMesh.position.copy(pos);
     boxMesh.rotation.copy(rotation);
     boxMesh.userData.size = size;
-}
-
-const spheres = [];
-for (let i = 0; i < 170; i++) {
-    const size = {radius: 0.02}; // 0.01 .. 0.1
+    scene.add(boxMesh);
+  }
+  // Spheres
+  for (let i = 0; i < sphereCount; i++) {
+    const size = {radius: 0.02};
     const sphereGeometry = new THREE.SphereGeometry(size.radius, 32, 32);
-    const pos = tubeGeometry.parameters.path.getPointAt(Math.random() * 0.99 + 0.01);
-    //offset the boxes x and y position randomly between -0.5 and 0.5
+    const u = SPAWN_START_U + Math.random() * (1 - SPAWN_START_U);
+    const pos = tubeGeometry.parameters.path.getPointAt(u);
     pos.x += Math.random() * 0.5 - 0.25;
     pos.y += Math.random() * 0.5 - 0.25;
     const rotation = new THREE.Euler(Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI);
     const sphereMesh = new THREE.Mesh(sphereGeometry, new THREE.MeshBasicMaterial({color: 0xffffff}));
-    scene.add(sphereMesh);
     spheres.push(sphereMesh);
     sphereMesh.position.copy(pos);
-  sphereMesh.userData.size = size;
-  sphereMesh.userData.radius = size.radius;
+    sphereMesh.userData.size = size;
+    sphereMesh.userData.radius = size.radius;
     sphereMesh.rotation.copy(rotation);
+    scene.add(sphereMesh);
+  }
 }
     
 
@@ -359,15 +482,45 @@ function updateParticles(dt) {
 }
 
 function checkBoxesForDisintegration() {
-    const camPos = camera.position;
+    if (!hazardsShown) return;
+    const currPos = player.position;
+    const prevPos = prevPlayerPos;
+    const movement = new THREE.Vector3().subVectors(currPos, prevPos);
+    const movementLenSq = movement.lengthSq();
     for (let i = boxes.length - 1; i >= 0; i--) {
         const b = boxes[i];
         if (!b || b.userData.disintegrated) continue;
-        // use size-based threshold
-        const threshold = Math.max(0.15, (b.userData.size || 0.05) * 3);
-        if (b.position.distanceTo(camPos) <= threshold) {
+        const size = b.userData.size || 0.05;
+        // sphere radius that fully contains the oriented cube (half diagonal)
+        const halfDiagonal = Math.sqrt(3) * (size * 0.5);
+        const radius = halfDiagonal + PLAYER_RADIUS;
+        // quick check at current position
+        if (b.position.distanceTo(currPos) <= radius) {
             disintegrateBox(b);
             boxes.splice(i, 1);
+            continue;
+        }
+        // segment-sphere test to avoid tunneling if the ship moved fast
+        if (movementLenSq > 0) {
+            const segDir = movement.clone();
+            const segLen = Math.sqrt(movementLenSq);
+            segDir.divideScalar(segLen);
+            const m = new THREE.Vector3().subVectors(prevPos, b.position);
+            const bdot = m.dot(segDir);
+            const c = m.lengthSq() - radius * radius;
+            if (c <= 0) {
+                disintegrateBox(b);
+                boxes.splice(i, 1);
+                continue;
+            }
+            const discr = bdot * bdot - c;
+            if (discr >= 0) {
+                const tHit = -bdot - Math.sqrt(discr);
+                if (tHit >= 0 && tHit <= segLen) {
+                    disintegrateBox(b);
+                    boxes.splice(i, 1);
+                }
+            }
         }
     }
 }
@@ -378,6 +531,7 @@ function updateClouds(t, dt) {
 }
 
 function checkSpheresForPenalty() {
+  if (!hazardsShown) return;
   const camPos = player.position;
   const prevPos = prevPlayerPos;
   const movement = new THREE.Vector3().subVectors(camPos, prevPos);
@@ -442,29 +596,21 @@ camera.add(light);
 const audioListener = new THREE.AudioListener();
 camera.add(audioListener);
 const bgm = new THREE.Audio(audioListener);
-const audioLoader = new THREE.AudioLoader();
+const audioLoader = new THREE.AudioLoader(assetLoadingManager);
+// Hoist audio flags/objects to module scope so other handlers can access them
 let bgmReady = false;
 let bgmMuted = false;
 let bgmBaseVolume = 0.3; // default volume when unmuted
 
-// Point SFX (played when user scores a point)
+// Point/Explosion SFX
 const sfxPoint = new THREE.Audio(audioListener);
 let sfxPointReady = false;
 const sfxExplosion = new THREE.Audio(audioListener);
 let sfxExplosionReady = false;
 
-// Music analysis
-let musicAnalyser = null;   // Web Audio AnalyserNode
-let musicFreqData = null;   // Uint8Array for frequency bins
-let musicEnergy = 0;     // 0..1
-let musicEnergyMA = 0;   // moving average
-let musicCentroid = 0;   // 0..1 (low->high)
-let musicBeat = false;   // beat detected this frame
-let beatLightBoost = 0;  // decays each frame
-const ENERGY_SMOOTH = 0.1;
-const BEAT_THRESHOLD = 0.18;
-const BEAT_COOLDOWN_MS = 200;
-let lastBeatMs = 0;
+function loadAudio(){
+
+// Music analysis (declared earlier)
 
 audioLoader.load('assets/soundFX/retro-gaming-271301.mp3', (buffer) => {
     bgm.setBuffer(buffer);
@@ -476,10 +622,14 @@ audioLoader.load('assets/soundFX/retro-gaming-271301.mp3', (buffer) => {
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256; // 128 bins
     musicFreqData = new Uint8Array(analyser.frequencyBinCount);
-    // connect bgm to analyser
-    bgm.source.connect(analyser);
-    analyser.connect(ctx.destination); // keep audio chain intact
-    musicAnalyser = analyser;
+      // tap into the audio graph without altering output routing
+      if (bgm.getOutput) {
+        bgm.getOutput().connect(analyser);
+      } else if (bgm.gain) {
+        bgm.gain.connect(analyser);
+      }
+      musicAnalyser = analyser;
+      markAssetLoaded();
 });
 
 
@@ -488,6 +638,7 @@ audioLoader.load('assets/soundFX/lazer-gun.mp3', (buffer) => {
   sfxPoint.setLoop(false);
   sfxPoint.setVolume(bgmMuted ? 0 : 0.7);
   sfxPointReady = true;
+  markAssetLoaded();
 });
 
 audioLoader.load('assets/soundFX/explosion-9-340460.mp3', (buffer) => {
@@ -495,7 +646,9 @@ audioLoader.load('assets/soundFX/explosion-9-340460.mp3', (buffer) => {
   sfxExplosion.setLoop(false);
   sfxExplosion.setVolume(bgmMuted ? 0 : 0.3);
   sfxExplosionReady = true;
+  markAssetLoaded();
 });
+}
 
 function tryStartBgm() {
     if (!bgmReady) return;
@@ -644,14 +797,15 @@ function updateCamera(t, dt) {
 
 let prevTimeMs = 0;
 function animateLoop(t = 0){
-    requestAnimationFrame(animateLoop);
+    if (!isRunning) return;
+    rafId = requestAnimationFrame(animateLoop);
     const dt = ((t - prevTimeMs) * 0.001) || 0;
     prevTimeMs = t;
     updateMusicMetrics(t);
     updateCamera(t, dt);
     changeLightColor(t);
     checkBoxesForDisintegration();
-  checkSpheresForPenalty();
+    checkSpheresForPenalty();
     updateParticles(dt);
     updateClouds(t, dt);
     composer.render();
@@ -659,4 +813,37 @@ function animateLoop(t = 0){
     updateScore();
 }
 
-animateLoop();
+function startGame(){
+  if (isRunning) return;
+  isRunning = true;
+  prevTimeMs = performance.now();
+  rafId = requestAnimationFrame(animateLoop);
+  if (bgmReady && bgmMuted === false && !bgm.isPlaying) bgm.play();
+  // Delay hazards visibility for 2 seconds to give the player room
+  hazardsShown = false;
+  clearObstacles();
+  setTimeout(() => { hazardsShown = true; spawnObstacles(); }, 5000);
+}
+
+function pauseGame(){
+  if (!isRunning) return;
+  isRunning = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  if (bgm && bgm.isPlaying) bgm.pause();
+}
+
+function resumeGame(){
+  if (isRunning) return;
+  isRunning = true;
+  prevTimeMs = performance.now();
+  rafId = requestAnimationFrame(animateLoop);
+  if (bgmReady && bgmMuted === false && !bgm.isPlaying) bgm.play();
+}
+
+function startNewGame(){
+  // Restart full game: reset obstacles and score, then start with spawn delay
+  score = 0; streak = 0; multiplier = 1; updateScore();
+  hazardsShown = false;
+  clearObstacles();
+  startGame();
+}

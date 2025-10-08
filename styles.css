@@ -1,7 +1,52 @@
-body {
+/* 1. Use a more-intuitive box-sizing model */
+*, *::before, *::after {
+    box-sizing: border-box;
+  }
+  
+  /* 2. Remove default margin */
+  * {
+    margin: 0;
+  }
+  
+  body {
+    /* 3. Add accessible line-height */
+    line-height: 1.5;
+    /* 4. Improve text rendering */
+    -webkit-font-smoothing: antialiased;
     font-family: "Bebas Neue", sans-serif;
-}
 
+  }
+  
+  /* 5. Improve media defaults */
+  img, picture, video, canvas, svg {
+    display: block;
+    max-width: 100%;
+  }
+  
+  /* 6. Inherit fonts for form controls */
+  input, button, textarea, select {
+    font: inherit;
+  }
+  
+  /* 7. Avoid text overflows */
+  p, h1, h2, h3, h4, h5, h6 {
+    overflow-wrap: break-word;
+  }
+  
+  /* 8. Improve line wrapping */
+  p {
+    text-wrap: pretty;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    text-wrap: balance;
+  }
+  
+  /*
+    9. Create a root stacking context
+  */
+  #root, #__next {
+    isolation: isolate;
+  }
 
 
 
@@ -18,6 +63,7 @@ body {
     height: 100vh;
     display: flex;
     justify-content: center;
+    flex-direction: column;
     align-items: center;
     font-size: 4rem;
     font-weight: bold;
@@ -27,19 +73,117 @@ body {
     top: 0;
     left: 0;
     z-index: 1;   
+}
+
+.container ol {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    margin-bottom: 2rem;
+
+}
+
+.container li {
+    font-size: 1.5rem;
+    text-decoration: none;
+    margin: 0;
+    opacity: 1;
+    color: white;
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+    font-weight: normal;
+    transition: opacity 2s ease-in-out;
+}
+
+#preloader { display: none; }
+#preloader.show {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, #08131b 0%, #000 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.loader-content {
+  width: min(480px, 80vw);
+  color: #e6f7ff;
+  text-align: center;
+  font-size: 1.5rem;
+}
+
+.loader-text { margin-bottom: 12px; }
+
+.loader-bar {
+  width: 100%;
+  height: 10px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.loader-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #27e6ff, #7b61ff);
+  box-shadow: 0 0 12px rgba(39,230,255,0.7);
+  transition: width 0.3s ease;
+}
+
+header {
+    position: absolute;
+    width: 100vw;
+    height: fit-content;
+    top: 0;
+    left: 0;
+    z-index: 2;
+    display: flex;
+    justify-content: space-between;
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    height: 100px;
+    background-color: rgba(0, 0, 0, 1);
+    color: white;
+    font-size: 2rem;
+    font-weight: bold;
+    padding: 0 3rem;
+    
+}
+
+.controls {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+
+    align-items: center;
+}
+
+.container.start {
     animation: party 3s linear forwards;
+}
+
+.start-button {
+    background-color: black;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 5px;
+    font-size: 2rem;
+    font-weight: bold;
+    cursor: pointer;
 }
 
 h1 {
     opacity: 1;
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
     transition: opacity 2s ease-in-out;
 }
 
 .score {
-    position: absolute;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
     z-index: 1;
     font-size: 3rem;
 }
