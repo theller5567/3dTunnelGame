@@ -18,9 +18,9 @@ export class GateSystem {
         this.gates.length = 0;
     }
 
-    spawn(count = 10) {
+    spawn(count = 10, startU = this.spawnStartU) {
         for (let i = 0; i < count; i++) {
-            const u = (this.spawnStartU + Math.random() * (1 - this.spawnStartU)) % 1;
+            const u = (startU + Math.random() * (1 - startU)) % 1;
             const center = this.path.getPointAt(u);
             const tangent = this.path.getTangentAt(u).normalize();
             const arbitrary = Math.abs(tangent.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);

@@ -11,7 +11,9 @@ import { UnrealBloomPass } from 'jsm/postprocessing/UnrealBloomPass.js';
 import { CloudSystem } from './src/clouds.js';
 import { GateSystem } from './src/gates.js';
 import { createCircleSpriteTexture } from './src/utils.js';
+import { LaserSystem } from './src/lasers.js';
 import { ColladaLoader } from 'jsm/loaders/ColladaLoader.js';
+import { initPreviewSpaceship } from './src/previewShip.js';
 
 const w = window.innerWidth;
 const h = window.innerHeight;
@@ -20,13 +22,16 @@ const fov = 75;
 const aspect = w / h;
 const near = 0.1;
 const far = 1000;
-let score = 0;
-let streak = 0;           // consecutive positive gains without losses
-let multiplier = 1;       // score multiplier (>=1). 5-streak -> x2
-const STREAK_FOR_X2 = 5;  // threshold to activate x2
-let level = 1;            // current level (starts at 1)
-let nextLevelScore = 50;  // points needed for next level
+let score = 35;
+let streak = 0;           // deprecated (no multiplier)
+let multiplier = 1;       // deprecated (fixed at 1)
+const STREAK_FOR_X2 = 5;  // deprecated
+let currentStage = 1;     // Stage 1 baseline
+let stage2score = 50;  // Stage 2 threshold
+let stage3score = 200;  // Stage 3 threshold
+let isStageTransition = false; // guard during stage transitions
 const SPAWN_START_U = 0.12; // 0.0..1.0 param along spline; 0.15 ≈ 15% down the tube
+const OVERLAY_DURATION_MS = 1200; // how long the four strips take to slide away
 
 const scoreText = document.querySelector('.score-value');
 const levelUpEl = document.querySelector('.level-up');
@@ -41,6 +46,19 @@ const restartButton = document.querySelector('.restart-button');
 const header = document.querySelector('header');
 const countdown = document.querySelector('.countdown');
 const COUNTDOWN_SECONDS = 10; // keep obstacles spawn in sync with countdown
+// Initialize standalone preview (separate from game)
+const previewCtrl = initPreviewSpaceship({
+  canvasId: 'threeD-spaceship',
+  modelUrl: 'assets/models/ship-new.dae',
+  position: { x: 0, y: 0, z: 0 },
+  rotation: { x: -Math.PI * 0.4, y: 0, z: Math.PI * -0.4 },
+  scale: 0.06,
+  spinSpeed: 0
+});
+
+ 
+
+
 
 let isRunning = false; // game loop state
 let hasStarted = false; // has the game been started at least once
@@ -49,7 +67,9 @@ let rafId = 0; // current animation frame id
  const PLAYER_RADIUS = 0.03; // approximate collision radius for the ship
  // Feature flag: optionally skip loading the ship model so it doesn't need to be in git
  const USE_SHIP_MODEL = true;
- let pendingStart = false; // start requested but waiting for assets
+let pendingStart = false; // start requested but waiting for assets
+let overlayFinished = false; // overlay strips finished animating
+let assetsReady = false; // all assets loaded
  let TOTAL_ASSETS = USE_SHIP_MODEL ? 4 : 3; // model (optional) + 3 audio files
 let loadedAssets = 0;
 function updatePreloaderProgress(extra = 0){
@@ -61,8 +81,11 @@ function markAssetLoaded(){
   loadedAssets += 1;
   updatePreloaderProgress();
   if (loadedAssets >= TOTAL_ASSETS) {
-    if (preloader) preloader.classList.remove('show');
-    if (pendingStart) { tryStartBgm(); startGame(); pendingStart = false; }
+    assetsReady = true;
+    if (overlayFinished) {
+      if (preloader) preloader.classList.remove('show');
+      if (pendingStart) { tryStartBgm(); startGame(); pendingStart = false; }
+    }
   }
 }
 
@@ -95,43 +118,65 @@ const scene = new THREE.Scene();
   }
 
   function updateScore() {
-    scoreText.textContent = `${score}  x${multiplier}`;
+    scoreText.textContent = `${score}`;
   }
 
 
   startButton.addEventListener('click', (e) => {
     e.stopPropagation(); // prevent global click toggle from pausing immediately
+    document.querySelectorAll('.bg-overlay div').forEach(div => div.classList.add('show'));
     container.classList.add('start');
-    header.style.display = 'flex';
     h1Text.style.opacity = 0;
     startButton.style.display = 'none';
     controls.enabled = true;
     hasStarted = true;
-    if (preloader) preloader.classList.add('show');
-    if (container) container.style.display = 'none';
-    pendingStart = true;
+    // defer preloader and asset loading until overlay completes
+    setTimeout(() => {
+      overlayFinished = true;
+      if (preloader) preloader.classList.add('show');
+      header.style.display = 'flex';
+      // now begin loading assets
+      pendingStart = true;
+      // Initialize preloader UI to 0%
+      if (loaderPctEl) loaderPctEl.textContent = '0%';
+      if (loaderFillEl) loaderFillEl.style.width = '0%';
+      if (USE_SHIP_MODEL) {
+        loadModel();
+      }
+      loadAudio();
+      if (container) container.style.display = 'none';
+      // if assets have already been prepared (shouldn't happen now), gate start
+      if (assetsReady && pendingStart) { tryStartBgm(); startGame(); pendingStart = false; }
+    }, OVERLAY_DURATION_MS);
     // Arm audio context with a user gesture so playback will succeed after load
     try {
       const ctx = audioListener && audioListener.context;
       if (ctx && ctx.state === 'suspended') ctx.resume();
     } catch (err) {}
-    // Initialize preloader UI to 0%
-    if (loaderPctEl) loaderPctEl.textContent = '0%';
-    if (loaderFillEl) loaderFillEl.style.width = '0%';
-  // Begin loading assets; game will start automatically when done
-    if (USE_SHIP_MODEL) {
-      loadModel();
-    } else {
-      // If skipping model, mark as effectively loaded so progress reaches 100%
-      // immediately account for the missing model slot
-      // Note: TOTAL_ASSETS is already reduced when USE_SHIP_MODEL is false
-    }
-    loadAudio();
   });
 
   // Pause when mouse leaves the viewport and resume on enter
   window.addEventListener('mouseleave', () => { if (hasStarted) pauseGame(); });
   window.addEventListener('mouseenter', () => { if (hasStarted) resumeGame(); });
+  // Fire laser on click (Stage 3+ only)
+  window.addEventListener('mousedown', (e) => {
+    if (!hasStarted || !isRunning) return;
+    if (currentStage < 3) return;
+    // play the laser sound every time the player shoots
+    if (sfxLazerGunReady && !bgmMuted) {
+      if (sfxLazerGun.isPlaying) sfxLazerGun.stop();
+      sfxLazerGun.play();
+    }
+
+   
+    // build forward direction from player towards lookAt
+    const path = tubeGeometry.parameters.path;
+    const lookAt = path.getPointAt((pathU + 0.03) % 1);
+    const dir = new THREE.Vector3().subVectors(lookAt, player.position).normalize();
+    // origin from slightly in front of ship
+    const origin = player.position.clone().add(dir.clone().multiplyScalar(0.1));
+    laserSystem.spawn(origin, dir, 0x7ffeff);
+  });
 
   pauseButton.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -163,7 +208,7 @@ renderer.setSize(w, h, true);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMappingExposure = 1.25;
-document.body.appendChild(renderer.domElement);
+document.body.querySelector('.game-canvas').appendChild(renderer.domElement);
 
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -331,39 +376,68 @@ scene.add(tubeLines);
 
 // Score helper that applies streak and multiplier rules
 function addScore(delta) {
-  if (delta > 0) {
-    streak += 1;
-    if (streak >= STREAK_FOR_X2) multiplier = 2; // simple rule: 5-in-a-row => x2
-    score += delta * multiplier;
-    // play point SFX on positive score
-    if (sfxPointReady && !bgmMuted) {
-      // restart SFX if it was still playing
+  if (delta !== 0) {
+    score += delta;
+    if (delta > 0 && sfxPointReady && !bgmMuted) {
       if (sfxPoint.isPlaying) sfxPoint.stop();
       sfxPoint.play();
     }
-  } else if (delta < 0) {
-    streak = 0;
-    multiplier = 1;
-    score += delta; // penalties are not multiplied
-    if (sfxExplosionReady && !bgmMuted) {
+    if (delta < 0 && sfxExplosionReady && !bgmMuted) {
       sfxExplosion.play();
     }
   }
-  // level progression
-  if (score >= nextLevelScore) {
-    onLevelUp();
+  // stage progression
+  if (score >= stage2score) {
+    onStageAdvance();
   }
 }
 
-function onLevelUp(){
-  level += 1;
-  nextLevelScore += 50; // increase threshold by 50 each level
-  increaseDifficulty();
-  if (levelUpEl) {
-    levelUpEl.style.display = 'flex';
-    levelUpEl.textContent = `Level ${level}!`;
-    setTimeout(() => { if (levelUpEl) levelUpEl.style.display = 'none'; }, 2000);
+function onLevelUp(){}
+
+function onStageAdvance(){
+  if (isStageTransition) return;
+  isStageTransition = true;
+  currentStage += 1;
+  if (currentStage === 2) {
+    stage2score = 100; // next target for Stage 3
+    // Show Stage 2 overlay
+    if (levelUpEl) {
+      levelUpEl.style.display = 'flex';
+      levelUpEl.textContent = 'Stage 2';
+      setTimeout(() => { if (levelUpEl) levelUpEl.style.display = 'none'; }, 2000);
+    }
+    // Reset position and obstacles like new game, but keep score
+    // keep loop running; just stop bgm to restart from beginning after countdown
+    if (bgm && bgm.isPlaying) bgm.stop();
+    resetToStartOfSpline();
+    hazardsShown = false;
+    clearObstacles();
+    // Increase difficulty: faster and more obstacles, introduce gates
+    speedTarget = Math.min(SPEED_MAX, speedTarget + 0.03);
+    // Start countdown and spawn after countdown with higher density
+    startStageWithCountdown(() => {
+      hazardsShown = true;
+      const SAFE_START_U = 0.25; // push spawns further down the tube during stage transition
+      spawnObstacles(220, 220, SAFE_START_U); // denser and farther
+      gateSystem.spawn(16, SAFE_START_U);
+      tryStartBgm();
+      isStageTransition = false;
+    });
   }
+  if (currentStage === 3) {
+    stage3score = 200; // next target for Stage 4
+    // Show Stage 3 overlay
+    if (levelUpEl) {
+      levelUpEl.style.display = 'flex';
+      levelUpEl.textContent = 'Stage 3';
+      setTimeout(() => { if (levelUpEl) levelUpEl.style.display = 'none'; }, 2000);
+    }
+  }
+}
+
+function startStageWithCountdown(after){
+  countDown();
+  setTimeout(() => { if (typeof after === 'function') after(); }, COUNTDOWN_SECONDS * 1000);
 }
 
 function increaseDifficulty(){
@@ -377,6 +451,7 @@ function increaseDifficulty(){
 
 // Gates (modularized)
 const gateSystem = new GateSystem(scene, tubeGeometry.parameters.path, SPAWN_START_U);
+const laserSystem = new LaserSystem(scene, composer);
 
 // clouds system
 const cloudSystem = new CloudSystem(scene, tubeGeometry.parameters.path, frames, { additive: true });
@@ -407,41 +482,71 @@ function clearObstacles(){
   gateSystem.clear();
 }
 
-function spawnObstacles(boxCount = 150, sphereCount = 170){
+function spawnObstacles(boxCount = 150, sphereCount = 170, startU = SPAWN_START_U){
+  const path = tubeGeometry.parameters.path;
+  const tubeRadius = 0.5;
+  const maxR = tubeRadius * 0.9;
   // Boxes
   for (let i = 0; i < boxCount; i++) {
     const size = Math.random() * (0.1 - 0.01) + 0.01; // 0.01 .. 0.1
-    const box = new THREE.BoxGeometry(size, size, size);
-    // pick a param u that is not near the start of the tube
-    const u = SPAWN_START_U + Math.random() * (1 - SPAWN_START_U);
-    const pos = tubeGeometry.parameters.path.getPointAt(u);
-    pos.x += Math.random() * 0.5 - 0.25;
-    pos.y += Math.random() * 0.5 - 0.25;
+    const geom = new THREE.BoxGeometry(size, size, size);
+    const u = startU + Math.random() * (1 - startU);
+    const center = path.getPointAt(u);
+    const idx = Math.floor(u * frameSegments);
+    const normal = frames.normals[idx % frameSegments].clone();
+    const binormal = frames.binormals[idx % frameSegments].clone();
+    const r = THREE.MathUtils.randFloat(0.05, maxR * 0.9);
+    const ang = Math.random() * Math.PI * 2;
+    const ox = Math.cos(ang) * r;
+    const oy = Math.sin(ang) * r;
+    const offset = normal.clone().multiplyScalar(ox).add(binormal.clone().multiplyScalar(oy));
+    const pos = center.clone().add(offset);
     const rotation = new THREE.Euler(Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI);
-    const boxMaterial = new THREE.MeshPhongMaterial({color: 0xffffff, shininess: 100});
-    const boxMesh = new THREE.Mesh(box, boxMaterial);
-    boxes.push(boxMesh);
-    boxMesh.position.copy(pos);
-    boxMesh.rotation.copy(rotation);
-    boxMesh.userData.size = size;
-    scene.add(boxMesh);
+    const mat = new THREE.MeshPhongMaterial({color: 0xffffff, shininess: 100});
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.position.copy(pos);
+    mesh.rotation.copy(rotation);
+    mesh.userData = {
+      size,
+      u,
+      ox, oy,
+      vx: THREE.MathUtils.randFloatSpread(0.4), // -0.2..0.2
+      vy: THREE.MathUtils.randFloatSpread(0.4),
+      movable: true
+    };
+    boxes.push(mesh);
+    scene.add(mesh);
   }
   // Spheres
   for (let i = 0; i < sphereCount; i++) {
-    const size = {radius: 0.02};
-    const sphereGeometry = new THREE.SphereGeometry(size.radius, 32, 32);
-    const u = SPAWN_START_U + Math.random() * (1 - SPAWN_START_U);
-    const pos = tubeGeometry.parameters.path.getPointAt(u);
-    pos.x += Math.random() * 0.5 - 0.25;
-    pos.y += Math.random() * 0.5 - 0.25;
+    const radius = 0.02;
+    const geom = new THREE.SphereGeometry(radius, 32, 32);
+    const u = startU + Math.random() * (1 - startU);
+    const center = path.getPointAt(u);
+    const idx = Math.floor(u * frameSegments);
+    const normal = frames.normals[idx % frameSegments].clone();
+    const binormal = frames.binormals[idx % frameSegments].clone();
+    const r = THREE.MathUtils.randFloat(0.05, maxR * 0.9);
+    const ang = Math.random() * Math.PI * 2;
+    const ox = Math.cos(ang) * r;
+    const oy = Math.sin(ang) * r;
+    const offset = normal.clone().multiplyScalar(ox).add(binormal.clone().multiplyScalar(oy));
+    const pos = center.clone().add(offset);
     const rotation = new THREE.Euler(Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI);
-    const sphereMesh = new THREE.Mesh(sphereGeometry, new THREE.MeshBasicMaterial({color: 0xffffff}));
-    spheres.push(sphereMesh);
-    sphereMesh.position.copy(pos);
-    sphereMesh.userData.size = size;
-    sphereMesh.userData.radius = size.radius;
-    sphereMesh.rotation.copy(rotation);
-    scene.add(sphereMesh);
+    const mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({color: 0xffffff}));
+    mesh.position.copy(pos);
+    mesh.rotation.copy(rotation);
+    mesh.userData = {
+      size: { radius },
+      radius,
+      u,
+      ox, oy,
+      vx: THREE.MathUtils.randFloatSpread(0.4),
+      vy: THREE.MathUtils.randFloatSpread(0.4),
+      movable: true
+    };
+    spheres.push(mesh);
+    scene.add(mesh);
   }
 }
     
@@ -449,10 +554,10 @@ function spawnObstacles(boxCount = 150, sphereCount = 170){
 // particle systems spawned from disintegrated boxes
 const particleSystems = [];
 
-function disintegrateBox(boxMesh) {
+function disintegrateBox(boxMesh, penalize = true) {
     if (!boxMesh || boxMesh.userData.disintegrated) return;
     boxMesh.userData.disintegrated = true;
-    addScore(-1);
+    if (penalize) addScore(-1);
     if (sfxExplosionReady && !bgmMuted) {
       sfxExplosion.play();
     }
@@ -722,6 +827,8 @@ const sfxPoint = new THREE.Audio(audioListener);
 let sfxPointReady = false;
 const sfxExplosion = new THREE.Audio(audioListener);
 let sfxExplosionReady = false;
+const sfxLazerGun = new THREE.Audio(audioListener);
+let sfxLazerGunReady = false;
 
 function loadAudio(){
 // Music analysis (declared earlier)
@@ -745,16 +852,23 @@ audioLoader.load('assets/soundFX/retro-gaming-271301.mp3', (buffer) => {
       markAssetLoaded();
 });
 
-
 audioLoader.load('assets/soundFX/lazer-gun.mp3', (buffer) => {
+  sfxLazerGun.setBuffer(buffer);
+  sfxLazerGun.setLoop(false);
+  sfxLazerGun.setVolume(bgmMuted ? 0 : 0.7);
+  sfxLazerGunReady = true;
+  markAssetLoaded();
+});
+
+audioLoader.load('assets/soundFX/coin-grab.wav', (buffer) => {
   sfxPoint.setBuffer(buffer);
   sfxPoint.setLoop(false);
-  sfxPoint.setVolume(bgmMuted ? 0 : 0.7);
+  sfxPoint.setVolume(bgmMuted ? 0 : 0.3);
   sfxPointReady = true;
   markAssetLoaded();
 });
 
-audioLoader.load('assets/soundFX/explosion-9-340460.mp3', (buffer) => {
+audioLoader.load('assets/soundFX/new-explosion.wav', (buffer) => {
   sfxExplosion.setBuffer(buffer);
   sfxExplosion.setLoop(false);
   sfxExplosion.setVolume(bgmMuted ? 0 : 0.3);
@@ -790,6 +904,9 @@ window.addEventListener('keydown', (e) => {
     }
     if (sfxExplosionReady) {
       sfxExplosion.setVolume(bgmMuted ? 0 : 0.7);
+    }
+    if (sfxLazerGunReady) {
+      sfxLazerGun.setVolume(bgmMuted ? 0 : 0.7);
     }
     }
 });
@@ -919,7 +1036,50 @@ function animateLoop(t = 0){
     changeLightColor(t);
     checkBoxesForDisintegration();
     checkSpheresForPenalty();
+    // Stage 3: move obstacles inside tube and bounce off walls
+    if (currentStage >= 3) {
+      const path = tubeGeometry.parameters.path;
+      const tubeRadius = 0.5;
+      const maxR = tubeRadius * 0.95;
+      const updateMover = (obj) => {
+        const d = obj.userData;
+        if (!d || !d.movable) return;
+        d.ox += (d.vx || 0) * dt;
+        d.oy += (d.vy || 0) * dt;
+        const rNow = Math.hypot(d.ox, d.oy);
+        if (rNow > maxR) {
+          const nx = d.ox / (rNow || 1);
+          const ny = d.oy / (rNow || 1);
+          const dot = (d.vx || 0) * nx + (d.vy || 0) * ny;
+          d.vx = (d.vx || 0) - 2 * dot * nx;
+          d.vy = (d.vy || 0) - 2 * dot * ny;
+          const k = maxR / (rNow || 1);
+          d.ox *= k; d.oy *= k;
+        }
+        const idx = Math.floor((d.u || 0) * frameSegments);
+        const normal = frames.normals[idx % frameSegments];
+        const binormal = frames.binormals[idx % frameSegments];
+        const center = path.getPointAt(d.u || 0);
+        obj.position.copy(center)
+          .add(normal.clone().multiplyScalar(d.ox))
+          .add(binormal.clone().multiplyScalar(d.oy));
+      };
+      for (let i = 0; i < boxes.length; i++) updateMover(boxes[i]);
+      for (let i = 0; i < spheres.length; i++) updateMover(spheres[i]);
+    }
     checkGates();
+    // update lasers and check for hits on boxes (only Stage 3+)
+    if (currentStage >= 3) {
+      laserSystem.update(dt);
+      const hit = laserSystem.findHitBox(boxes);
+      if (hit) {
+        const { laserIndex, boxIndex } = hit;
+        const box = boxes[boxIndex];
+        disintegrateBox(box, false); // no penalty for laser hit
+        boxes.splice(boxIndex, 1);
+        laserSystem.removeAt(laserIndex);
+      }
+    }
     updateParticles(dt);
     updateClouds(t, dt);
     composer.render();
