@@ -80,15 +80,24 @@ export class CloudSystem {
 
     // update: drift along the tunnel, sway radially, and tint
     update(t, dt, lightColor, musicEnergy = 0, musicBeat = false) {
+        const tangents = this.frames && this.frames.tangents;
+        const normals = this.frames && this.frames.normals;
+        const binormals = this.frames && this.frames.binormals;
+        const tLen = tangents && tangents.length || 0;
+        const nLen = normals && normals.length || 0;
+        const bLen = binormals && binormals.length || 0;
+        if (!tLen || !nLen || !bLen) return;
         const children = this.group.children;
         for (let i = 0; i < children.length; i++) {
             const s = children[i];
             const data = s.userData;
             data.u = (data.u + data.speed * dt) % 1;
-            const idx = Math.floor(data.u * this.frames.tangents.length);
-            const normal = this.frames.normals[idx % this.frames.normals.length];
-            const binormal = this.frames.binormals[idx % this.frames.binormals.length];
-            const pos = this.path.getPointAt(data.u);
+            const idx = Math.floor((data.u || 0) * tLen);
+            if (!Number.isFinite(idx)) continue;
+            const normal = normals[idx % nLen];
+            const binormal = binormals[idx % bLen];
+            if (!normal || !binormal) continue;
+            const pos = this.path.getPointAt(data.u || 0);
             const swayR = data.radius + Math.sin(t * 0.001 + data.phase) * data.sway;
             const x = Math.cos(data.angle) * swayR;
             const y = Math.sin(data.angle) * swayR;

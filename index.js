@@ -12,6 +12,7 @@ import { CloudSystem } from './src/clouds.js';
 import { GateSystem } from './src/gates.js';
 import { createCircleSpriteTexture } from './src/utils.js';
 import { LaserSystem } from './src/lasers.js';
+import { GameLoop, Game } from './src/Game.js';
 import { ColladaLoader } from 'jsm/loaders/ColladaLoader.js';
 import { initPreviewSpaceship } from './src/previewShip.js';
 
@@ -23,12 +24,9 @@ const aspect = w / h;
 const near = 0.1;
 const far = 1000;
 let score = 35;
-let streak = 0;           // deprecated (no multiplier)
-let multiplier = 1;       // deprecated (fixed at 1)
-const STREAK_FOR_X2 = 5;  // deprecated
 let currentStage = 1;     // Stage 1 baseline
 let stage2score = 50;  // Stage 2 threshold
-let stage3score = 200;  // Stage 3 threshold
+let stage3score = 100;  // Stage 3 threshold
 let isStageTransition = false; // guard during stage transitions
 const SPAWN_START_U = 0.12; // 0.0..1.0 param along spline; 0.15 ≈ 15% down the tube
 const OVERLAY_DURATION_MS = 1200; // how long the four strips take to slide away
@@ -46,67 +44,34 @@ const restartButton = document.querySelector('.restart-button');
 const header = document.querySelector('header');
 const countdown = document.querySelector('.countdown');
 const COUNTDOWN_SECONDS = 10; // keep obstacles spawn in sync with countdown
-// Initialize standalone preview (separate from game)
-const previewCtrl = initPreviewSpaceship({
-  canvasId: 'threeD-spaceship',
-  modelUrl: 'assets/models/ship-new.dae',
-  position: { x: 0, y: 0, z: 0 },
-  rotation: { x: -Math.PI * 0.4, y: 0, z: Math.PI * -0.4 },
-  scale: 0.06,
-  spinSpeed: 0
-});
-
- 
-
-
 
 let isRunning = false; // game loop state
 let hasStarted = false; // has the game been started at least once
-let rafId = 0; // current animation frame id
- let hazardsShown = false; // visibility gate for boxes/spheres at game start
- const PLAYER_RADIUS = 0.03; // approximate collision radius for the ship
+let hazardsShown = false; // visibility gate for boxes/spheres at game start
+// player collision radius moved into Game ctx
  // Feature flag: optionally skip loading the ship model so it doesn't need to be in git
- const USE_SHIP_MODEL = true;
+const USE_SHIP_MODEL = true;
 let pendingStart = false; // start requested but waiting for assets
-let overlayFinished = false; // overlay strips finished animating
 let assetsReady = false; // all assets loaded
- let TOTAL_ASSETS = USE_SHIP_MODEL ? 4 : 3; // model (optional) + 3 audio files
+let TOTAL_ASSETS = USE_SHIP_MODEL ? 5 : 4; // model (optional) + 4 audio files
 let loadedAssets = 0;
-function updatePreloaderProgress(extra = 0){
-  const pct = Math.max(0, Math.min(100, Math.round(((loadedAssets + extra) / TOTAL_ASSETS) * 100)));
-  if (loaderPctEl) loaderPctEl.textContent = `${pct}%`;
-  if (loaderFillEl) loaderFillEl.style.width = `${pct}%`;
-}
+
+
 function markAssetLoaded(){
   loadedAssets += 1;
-  updatePreloaderProgress();
-  if (loadedAssets >= TOTAL_ASSETS) {
-    assetsReady = true;
-    if (overlayFinished) {
-      if (preloader) preloader.classList.remove('show');
-      if (pendingStart) { tryStartBgm(); startGame(); pendingStart = false; }
-    }
-  }
+  game.totalAssets = TOTAL_ASSETS;
+  game.loadedAssets = loadedAssets;
+  game.preloaderEl = preloader;
+  game.tryStartBgm = tryStartBgm;
+  game.startGameCb = () => { startGame(); pendingStart = false; };
+  game.markAssetLoaded();
+  assetsReady = game.assetsReady;
 }
 
-// Music analysis state (declare early so functions can assign safely)
-let musicAnalyser = null;   // Web Audio AnalyserNode
-let musicFreqData = null;   // Uint8Array for frequency bins
-let musicEnergy = 0;     // 0..1
-let musicEnergyMA = 0;   // moving average
-let musicCentroid = 0;   // 0..1 (low->high)
-let musicBeat = false;   // beat detected this frame
-let beatLightBoost = 0;  // decays each frame
-const ENERGY_SMOOTH = 0.1;
-const BEAT_THRESHOLD = 0.18;
-const BEAT_COOLDOWN_MS = 200;
-let lastBeatMs = 0;
+// Music analysis moved into Game
 // scroll-controlled speed
 const SPEED_MIN = 0.09;
 const SPEED_MAX = 0.2;
-let speed = 0.1;
-let speedTarget = speed;
-let pathU = 0; // normalized 0..1 position along the path
 const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
 camera.position.z = 0;
 
@@ -124,29 +89,40 @@ const scene = new THREE.Scene();
 
   startButton.addEventListener('click', (e) => {
     e.stopPropagation(); // prevent global click toggle from pausing immediately
-    document.querySelectorAll('.bg-overlay div').forEach(div => div.classList.add('show'));
+    console.log('[index] Start clicked');
     container.classList.add('start');
     h1Text.style.opacity = 0;
     startButton.style.display = 'none';
     controls.enabled = true;
     hasStarted = true;
-    // defer preloader and asset loading until overlay completes
+    // configure preloader gating
+    game.configurePreloader({
+      totalAssets: TOTAL_ASSETS,
+      preloaderEl: preloader,
+      loaderPctEl,
+      loaderFillEl,
+      tryStartBgm,
+      startGame: () => { startGame(); pendingStart = false; }
+    });
+    // defer preloader and asset loading until intro delay completes
     setTimeout(() => {
-      overlayFinished = true;
+      console.log('[index] intro delay done');
       if (preloader) preloader.classList.add('show');
       header.style.display = 'flex';
-      // now begin loading assets
       pendingStart = true;
-      // Initialize preloader UI to 0%
       if (loaderPctEl) loaderPctEl.textContent = '0%';
       if (loaderFillEl) loaderFillEl.style.width = '0%';
-      if (USE_SHIP_MODEL) {
-        loadModel();
-      }
-      loadAudio();
+      if (USE_SHIP_MODEL) { loadModel(); }
+      // route audio loads via Game helper
+      // provide audio deps to Game so it can request files
+      game.ctx = { ...game.ctx, audioLoader, audioListener, bgm, sfxPoint, sfxExplosion, sfxLazerGun, bgmMuted, bgmBaseVolume };
+      // use Game.loadAudio defined in Game.js
+      console.log('[index] calling game.loadAudio');
+      game.loadAudio();
       if (container) container.style.display = 'none';
-      // if assets have already been prepared (shouldn't happen now), gate start
-      if (assetsReady && pendingStart) { tryStartBgm(); startGame(); pendingStart = false; }
+      // notify Game overlay finished; it starts when assets are ready
+      console.log('[index] calling game.onOverlayFinished');
+      if (game.onOverlayFinished) game.onOverlayFinished();
     }, OVERLAY_DURATION_MS);
     // Arm audio context with a user gesture so playback will succeed after load
     try {
@@ -163,7 +139,7 @@ const scene = new THREE.Scene();
     if (!hasStarted || !isRunning) return;
     if (currentStage < 3) return;
     // play the laser sound every time the player shoots
-    if (sfxLazerGunReady && !bgmMuted) {
+    if (sfxLazerGun && sfxLazerGun.buffer && !bgmMuted) {
       if (sfxLazerGun.isPlaying) sfxLazerGun.stop();
       sfxLazerGun.play();
     }
@@ -171,7 +147,7 @@ const scene = new THREE.Scene();
    
     // build forward direction from player towards lookAt
     const path = tubeGeometry.parameters.path;
-    const lookAt = path.getPointAt((pathU + 0.03) % 1);
+    const lookAt = path.getPointAt(((game.pathU ?? 0) + 0.03) % 1);
     const dir = new THREE.Vector3().subVectors(lookAt, player.position).normalize();
     // origin from slightly in front of ship
     const origin = player.position.clone().add(dir.clone().multiplyScalar(0.1));
@@ -216,16 +192,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.enabled = false;
 
-// allow user to move within the tube cross-section using mouse position
-const mouseTarget = { x: 0, y: 0 };
-const mouseSmoothed = { x: 0, y: 0 };
-const crossRadius = 0.35; // must be < tube radius (0.5)
-// lateral movement smoothing
-const lateralOffset = new THREE.Vector2(0, 0);
-const lateralVelocity = new THREE.Vector2(0, 0);
-const lateralStiffness = 20; // attraction to target (higher = snappier)
-const lateralDamping = 10;   // damping factor (higher = less oscillation)
-const lookAtSmoothed = new THREE.Vector3();
+// allow user to move within the tube cross-section using mouse position (moved to Game)
 const prevPlayerPos = new THREE.Vector3();
 const player = new THREE.Group();
 scene.add(player);
@@ -321,22 +288,13 @@ function onPointerMove(e){
     const rect = renderer.domElement.getBoundingClientRect();
     const mx = (e.clientX - rect.left) / rect.width;   // 0..1
     const my = (e.clientY - rect.top) / rect.height;  // 0..1
-    mouseTarget.x = (mx - 0.5) * 2; // -1..1
-    mouseTarget.y = (my - 0.5) * 2; // -1..1 (non-inverted Y)
+    game.mouseTarget.x = (mx - 0.5) * 2; // -1..1
+    game.mouseTarget.y = (my - 0.5) * 2; // -1..1 (non-inverted Y)
 }
 
 window.addEventListener('pointermove', onPointerMove, false);
 
-// Scrollwheel to adjust forward speed
-function onWheel(e){
-    const delta = Math.sign(e.deltaY) * -0.05; // up = faster, down = slower
-    speedTarget = THREE.MathUtils.clamp(speedTarget + delta, SPEED_MIN, SPEED_MAX);
-}
-window.addEventListener('wheel', onWheel, { passive: true });
-
-
-// reusable soft-circle texture for particles
-const PARTICLE_TEXTURE = createCircleSpriteTexture(64);
+// reusable soft-circle texture for particles (kept for preview/other modules if needed)
 
 const curve = spline.getPoints(100);
 const curveGeometry = new THREE.BufferGeometry().setFromPoints(curve);
@@ -364,90 +322,10 @@ composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.5, 0.1, 0.0);
 composer.addPass(bloomPass);
 
-
-
-
 const edgesGeometry = new THREE.EdgesGeometry(tubeGeometry, 0.2);
 const lineMaterial = new THREE.LineBasicMaterial({color: 0xffffff});
 const tubeLines = new THREE.LineSegments(edgesGeometry, lineMaterial);
 scene.add(tubeLines);
-
-// Tube color is driven by music (no score-based flashes)
-
-// Score helper that applies streak and multiplier rules
-function addScore(delta) {
-  if (delta !== 0) {
-    score += delta;
-    if (delta > 0 && sfxPointReady && !bgmMuted) {
-      if (sfxPoint.isPlaying) sfxPoint.stop();
-      sfxPoint.play();
-    }
-    if (delta < 0 && sfxExplosionReady && !bgmMuted) {
-      sfxExplosion.play();
-    }
-  }
-  // stage progression
-  if (score >= stage2score) {
-    onStageAdvance();
-  }
-}
-
-function onLevelUp(){}
-
-function onStageAdvance(){
-  if (isStageTransition) return;
-  isStageTransition = true;
-  currentStage += 1;
-  if (currentStage === 2) {
-    stage2score = 100; // next target for Stage 3
-    // Show Stage 2 overlay
-    if (levelUpEl) {
-      levelUpEl.style.display = 'flex';
-      levelUpEl.textContent = 'Stage 2';
-      setTimeout(() => { if (levelUpEl) levelUpEl.style.display = 'none'; }, 2000);
-    }
-    // Reset position and obstacles like new game, but keep score
-    // keep loop running; just stop bgm to restart from beginning after countdown
-    if (bgm && bgm.isPlaying) bgm.stop();
-    resetToStartOfSpline();
-    hazardsShown = false;
-    clearObstacles();
-    // Increase difficulty: faster and more obstacles, introduce gates
-    speedTarget = Math.min(SPEED_MAX, speedTarget + 0.03);
-    // Start countdown and spawn after countdown with higher density
-    startStageWithCountdown(() => {
-      hazardsShown = true;
-      const SAFE_START_U = 0.25; // push spawns further down the tube during stage transition
-      spawnObstacles(220, 220, SAFE_START_U); // denser and farther
-      gateSystem.spawn(16, SAFE_START_U);
-      tryStartBgm();
-      isStageTransition = false;
-    });
-  }
-  if (currentStage === 3) {
-    stage3score = 200; // next target for Stage 4
-    // Show Stage 3 overlay
-    if (levelUpEl) {
-      levelUpEl.style.display = 'flex';
-      levelUpEl.textContent = 'Stage 3';
-      setTimeout(() => { if (levelUpEl) levelUpEl.style.display = 'none'; }, 2000);
-    }
-  }
-}
-
-function startStageWithCountdown(after){
-  countDown();
-  setTimeout(() => { if (typeof after === 'function') after(); }, COUNTDOWN_SECONDS * 1000);
-}
-
-function increaseDifficulty(){
-  // increase speed target gently up to cap
-  speedTarget = Math.min(SPEED_MAX, speedTarget + 0.02);
-  // add more obstacles mid-run
-  spawnObstacles(50, 60);
-  // introduce gates
-  gateSystem.spawn(10);
-}
 
 // Gates (modularized)
 const gateSystem = new GateSystem(scene, tubeGeometry.parameters.path, SPAWN_START_U);
@@ -459,350 +337,19 @@ cloudSystem.populate(320, 0.5);
 const setCloudsColor = (...args) => cloudSystem.setColor(...args);
 
 
-// Obstacles (spawned after a short delay at game start)
+// Obstacles storage
 const boxes = [];
 const spheres = [];
-// Do not spawn obstacles in the first portion of the path so the ship has room
-
-function clearObstacles(){
-  for (let i = boxes.length - 1; i >= 0; i--) {
-    const b = boxes[i];
-    scene.remove(b);
-    if (b.geometry) b.geometry.dispose();
-    if (b.material) b.material.dispose();
-  }
-  boxes.length = 0;
-  for (let i = spheres.length - 1; i >= 0; i--) {
-    const s = spheres[i];
-    scene.remove(s);
-    if (s.geometry) s.geometry.dispose();
-    if (s.material) s.material.dispose();
-  }
-  spheres.length = 0;
-  gateSystem.clear();
-}
-
-function spawnObstacles(boxCount = 150, sphereCount = 170, startU = SPAWN_START_U){
-  const path = tubeGeometry.parameters.path;
-  const tubeRadius = 0.5;
-  const maxR = tubeRadius * 0.9;
-  // Boxes
-  for (let i = 0; i < boxCount; i++) {
-    const size = Math.random() * (0.1 - 0.01) + 0.01; // 0.01 .. 0.1
-    const geom = new THREE.BoxGeometry(size, size, size);
-    const u = startU + Math.random() * (1 - startU);
-    const center = path.getPointAt(u);
-    const idx = Math.floor(u * frameSegments);
-    const normal = frames.normals[idx % frameSegments].clone();
-    const binormal = frames.binormals[idx % frameSegments].clone();
-    const r = THREE.MathUtils.randFloat(0.05, maxR * 0.9);
-    const ang = Math.random() * Math.PI * 2;
-    const ox = Math.cos(ang) * r;
-    const oy = Math.sin(ang) * r;
-    const offset = normal.clone().multiplyScalar(ox).add(binormal.clone().multiplyScalar(oy));
-    const pos = center.clone().add(offset);
-    const rotation = new THREE.Euler(Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI);
-    const mat = new THREE.MeshPhongMaterial({color: 0xffffff, shininess: 100});
-    const mesh = new THREE.Mesh(geom, mat);
-    mesh.position.copy(pos);
-    mesh.rotation.copy(rotation);
-    mesh.userData = {
-      size,
-      u,
-      ox, oy,
-      vx: THREE.MathUtils.randFloatSpread(0.4), // -0.2..0.2
-      vy: THREE.MathUtils.randFloatSpread(0.4),
-      movable: true
-    };
-    boxes.push(mesh);
-    scene.add(mesh);
-  }
-  // Spheres
-  for (let i = 0; i < sphereCount; i++) {
-    const radius = 0.02;
-    const geom = new THREE.SphereGeometry(radius, 32, 32);
-    const u = startU + Math.random() * (1 - startU);
-    const center = path.getPointAt(u);
-    const idx = Math.floor(u * frameSegments);
-    const normal = frames.normals[idx % frameSegments].clone();
-    const binormal = frames.binormals[idx % frameSegments].clone();
-    const r = THREE.MathUtils.randFloat(0.05, maxR * 0.9);
-    const ang = Math.random() * Math.PI * 2;
-    const ox = Math.cos(ang) * r;
-    const oy = Math.sin(ang) * r;
-    const offset = normal.clone().multiplyScalar(ox).add(binormal.clone().multiplyScalar(oy));
-    const pos = center.clone().add(offset);
-    const rotation = new THREE.Euler(Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI);
-    const mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({color: 0xffffff}));
-    mesh.position.copy(pos);
-    mesh.rotation.copy(rotation);
-    mesh.userData = {
-      size: { radius },
-      radius,
-      u,
-      ox, oy,
-      vx: THREE.MathUtils.randFloatSpread(0.4),
-      vy: THREE.MathUtils.randFloatSpread(0.4),
-      movable: true
-    };
-    spheres.push(mesh);
-    scene.add(mesh);
-  }
-}
     
-
-// particle systems spawned from disintegrated boxes
-const particleSystems = [];
-
-function disintegrateBox(boxMesh, penalize = true) {
-    if (!boxMesh || boxMesh.userData.disintegrated) return;
-    boxMesh.userData.disintegrated = true;
-    if (penalize) addScore(-1);
-    if (sfxExplosionReady && !bgmMuted) {
-      sfxExplosion.play();
-    }
-    // removed score-based tube flash; color now driven by music
-    // parameters
-    const particleCount = 500;
-    const duration = 1.0; // seconds
-    const initialSpeed = 0.3; // units/sec
-
-    // create particle geometry in the box's local space
-    const positions = new Float32Array(particleCount * 3);
-    const velocities = new Float32Array(particleCount * 3);
-    const size = boxMesh.userData.size || 0.005;
-    console.log('size: ',boxMesh.userData.size);
-    const half = size * 0.02;
-    for (let i = 0; i < particleCount; i++) {
-        const ix = i * 3;
-        // random point inside the cube
-        positions[ix] = (Math.random() * 2 - 1) * half;
-        positions[ix + 1] = (Math.random() * 2 - 1) * half;
-        positions[ix + 2] = (Math.random() * 2 - 1) * half;
-        // random velocity mostly outward
-        const rx = (Math.random() * 2 - 1);
-        const ry = (Math.random() * 2 - 1);
-        const rz = (Math.random() * 2 - 1);
-        const len = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1;
-        velocities[ix] = (rx / len) * initialSpeed;
-        velocities[ix + 1] = (ry / len) * initialSpeed;
-        velocities[ix + 2] = (rz / len) * initialSpeed;
-    }
-
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-    const particleSize = THREE.MathUtils.clamp(size * 1.2, 0.003, 0.03);
-    const mat = new THREE.PointsMaterial({
-        color: boxMesh.material.color.getHex(),
-        map: PARTICLE_TEXTURE,
-        alphaMap: PARTICLE_TEXTURE,
-        size: particleSize,
-        sizeAttenuation: true,
-        transparent: true,
-        opacity: 0.2,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending
-    });
-
-    const particles = new THREE.Points(geom, mat);
-    particles.position.copy(boxMesh.position);
-    particles.quaternion.copy(boxMesh.quaternion);
-    particles.userData = {
-        velocities,
-        life: 0,
-        duration
-    };
-    scene.add(particles);
-    particleSystems.push(particles);
-
-    // remove the original box
-    scene.remove(boxMesh);
-    if (boxMesh.geometry) boxMesh.geometry.dispose();
-    if (boxMesh.material) boxMesh.material.dispose();
-}
-
-function updateParticles(dt) {
-    for (let i = particleSystems.length - 1; i >= 0; i--) {
-        const p = particleSystems[i];
-        const geom = p.geometry;
-        const posAttr = geom.getAttribute('position');
-        const positions = posAttr.array;
-        const vels = p.userData.velocities;
-        const life = p.userData.life + dt;
-        p.userData.life = life;
-
-        // simple outward drift and fade
-        for (let j = 0; j < positions.length; j += 3) {
-            positions[j] += vels[j] * dt;
-            positions[j + 1] += vels[j + 1] * dt;
-            positions[j + 2] += vels[j + 2] * dt;
-        }
-        posAttr.needsUpdate = true;
-
-        const t = Math.min(life / p.userData.duration, 1);
-        p.material.opacity = 1 - t;
-        p.material.needsUpdate = true;
-
-        if (life >= p.userData.duration) {
-            scene.remove(p);
-            p.geometry.dispose();
-            if (Array.isArray(p.material)) {
-                p.material.forEach(m => m.dispose());
-            } else {
-                p.material.dispose();
-            }
-            particleSystems.splice(i, 1);
-        }
-    }
-}
-
-function checkBoxesForDisintegration() {
-    if (!hazardsShown) return;
-    const currPos = player.position;
-    const prevPos = prevPlayerPos;
-    const movement = new THREE.Vector3().subVectors(currPos, prevPos);
-    const movementLenSq = movement.lengthSq();
-    for (let i = boxes.length - 1; i >= 0; i--) {
-        const b = boxes[i];
-        if (!b || b.userData.disintegrated) continue;
-        const size = b.userData.size || 0.05;
-        // sphere radius that fully contains the oriented cube (half diagonal)
-        const halfDiagonal = Math.sqrt(3) * (size * 0.5);
-        const radius = halfDiagonal + PLAYER_RADIUS;
-        // quick check at current position
-        if (b.position.distanceTo(currPos) <= radius) {
-            disintegrateBox(b);
-            boxes.splice(i, 1);
-            continue;
-        }
-        // segment-sphere test to avoid tunneling if the ship moved fast
-        if (movementLenSq > 0) {
-            const segDir = movement.clone();
-            const segLen = Math.sqrt(movementLenSq);
-            segDir.divideScalar(segLen);
-            const m = new THREE.Vector3().subVectors(prevPos, b.position);
-            const bdot = m.dot(segDir);
-            const c = m.lengthSq() - radius * radius;
-            if (c <= 0) {
-                disintegrateBox(b);
-                boxes.splice(i, 1);
-                continue;
-            }
-            const discr = bdot * bdot - c;
-            if (discr >= 0) {
-                const tHit = -bdot - Math.sqrt(discr);
-                if (tHit >= 0 && tHit <= segLen) {
-                    disintegrateBox(b);
-                    boxes.splice(i, 1);
-                }
-            }
-        }
-    }
-}
-
 // cloud system update
 function updateClouds(t, dt) {
-  cloudSystem.update(t, dt, light.color, musicEnergy, musicBeat);
-}
-
-// Detect gate passes and grant bonus
-function checkGates(){
-  if (!hazardsShown) return;
-  const prev = prevPlayerPos;
-  const pos = player.position;
-  const passed = gateSystem.checkPasses(prev, pos, () => addScore(5));
-  return passed;
-}
-
-function checkSpheresForPenalty() {
-  if (!hazardsShown) return;
-  const camPos = player.position;
-  const prevPos = prevPlayerPos;
-  const movement = new THREE.Vector3().subVectors(camPos, prevPos);
-  const movementLenSq = movement.lengthSq();
-  for (let i = spheres.length - 1; i >= 0; i--) {
-    const s = spheres[i];
-    if (!s) continue;
-    // radius with margin
-    const baseRadius = (s.userData && s.userData.radius != null)
-      ? s.userData.radius
-      : (s.geometry && s.geometry.parameters && s.geometry.parameters.radius) || 0.02;
-    const radius = baseRadius + 0.1;
-    // quick check current pos
-    if (s.position.distanceTo(camPos) <= radius) {
-      addScore(1);
-      scene.remove(s);
-      if (s.geometry) s.geometry.dispose();
-      if (s.material) s.material.dispose();
-      spheres.splice(i, 1);
-      continue;
-    }
-    // segment-sphere intersection to catch tunneling
-    if (movementLenSq > 0) {
-      const segDir = movement.clone();
-      const segLen = Math.sqrt(movementLenSq);
-      segDir.divideScalar(segLen);
-      const m = new THREE.Vector3().subVectors(prevPos, s.position);
-      const b = m.dot(segDir);
-      const c = m.lengthSq() - radius * radius;
-      if (c <= 0) {
-        // started inside sphere
-        addScore(1);
-        scene.remove(s);
-        if (s.geometry) s.geometry.dispose();
-        if (s.material) s.material.dispose();
-        spheres.splice(i, 1);
-        continue;
-      }
-      const discr = b * b - c;
-      if (discr >= 0) {
-        const tHit = -b - Math.sqrt(discr);
-        if (tHit >= 0 && tHit <= segLen) {
-          addScore(1);
-          scene.remove(s);
-          if (s.geometry) s.geometry.dispose();
-          if (s.material) s.material.dispose();
-          spheres.splice(i, 1);
-        }
-      }
-    }
-  }
+  cloudSystem.update(t, dt, light.color, game.musicEnergy, game.musicBeat);
 }
 
 // Reset ship/camera to the start of the spline (fresh-run pose)
 function resetToStartOfSpline(){
-  pathU = 0;
-  // reset movement smoothing/state
-  mouseTarget.x = 0; mouseTarget.y = 0;
-  mouseSmoothed.x = 0; mouseSmoothed.y = 0;
-  lateralOffset.set(0, 0);
-  lateralVelocity.set(0, 0);
-  // reset speed to base
-  speedTarget = 0.1;
-  speed = 0.1;
-  // place camera and player at start
-  const p = 0;
-  const path = tubeGeometry.parameters.path;
-  const camPos = path.getPointAt(p);
-  const lookAt = path.getPointAt((p + 0.03) % 1);
-  const forward = new THREE.Vector3().subVectors(lookAt, camPos).normalize();
-  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-  const upScreen = new THREE.Vector3().crossVectors(right, forward).normalize();
-  camera.position.copy(camPos);
-  lookAtSmoothed.copy(lookAt);
-  camera.lookAt(lookAtSmoothed);
-  // compute initial player position in front of camera with offsets
-  const playerPos = camPos.clone()
-    .add(right.clone().multiplyScalar(shipOffsetX))
-    .add(upScreen.clone().multiplyScalar(shipOffsetY))
-    .add(forward.clone().multiplyScalar(playerDistance + shipOffsetZ));
-  prevPlayerPos.copy(playerPos);
-  player.position.copy(playerPos);
-  player.lookAt(lookAt);
-  player.rotation.x = 0;
-  player.rotation.z = 0;
-  player.rotateY(Math.PI);
+  game.ctx = { ...game.ctx, tubeGeometry, camera, player, prevPlayerPos, playerDistance, shipOffsetX, shipOffsetY, shipOffsetZ };
+  game.resetToStart();
 }
 
 //attach a light to the camera position
@@ -830,67 +377,25 @@ let sfxExplosionReady = false;
 const sfxLazerGun = new THREE.Audio(audioListener);
 let sfxLazerGunReady = false;
 
-function loadAudio(){
-// Music analysis (declared earlier)
-audioLoader.load('assets/soundFX/retro-gaming-271301.mp3', (buffer) => {
-    bgm.setBuffer(buffer);
-    bgm.setLoop(true);
-    bgm.setVolume(bgmMuted ? 0 : bgmBaseVolume);
-    bgmReady = true;
-    // create analyser once bgm is ready (Web Audio API)
-    const ctx = audioListener.context;
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 256; // 128 bins
-    musicFreqData = new Uint8Array(analyser.frequencyBinCount);
-      // tap into the audio graph without altering output routing
-      if (bgm.getOutput) {
-        bgm.getOutput().connect(analyser);
-      } else if (bgm.gain) {
-        bgm.gain.connect(analyser);
-      }
-      musicAnalyser = analyser;
-      markAssetLoaded();
-});
-
-audioLoader.load('assets/soundFX/lazer-gun.mp3', (buffer) => {
-  sfxLazerGun.setBuffer(buffer);
-  sfxLazerGun.setLoop(false);
-  sfxLazerGun.setVolume(bgmMuted ? 0 : 0.7);
-  sfxLazerGunReady = true;
-  markAssetLoaded();
-});
-
-audioLoader.load('assets/soundFX/coin-grab.wav', (buffer) => {
-  sfxPoint.setBuffer(buffer);
-  sfxPoint.setLoop(false);
-  sfxPoint.setVolume(bgmMuted ? 0 : 0.3);
-  sfxPointReady = true;
-  markAssetLoaded();
-});
-
-audioLoader.load('assets/soundFX/new-explosion.wav', (buffer) => {
-  sfxExplosion.setBuffer(buffer);
-  sfxExplosion.setLoop(false);
-  sfxExplosion.setVolume(bgmMuted ? 0 : 0.3);
-  sfxExplosionReady = true;
-  markAssetLoaded();
-});
-}
 
 function tryStartBgm() {
-    if (!bgmReady) return;
     const ctx = audioListener.context;
     if (ctx && ctx.state === 'suspended') {
         ctx.resume();
     }
-    if (!bgm.isPlaying) {
+    if (bgm.buffer && !bgm.isPlaying) {
         bgm.play();
     }
 }
 
 // Start audio on any user gesture (required by browsers)
-window.addEventListener('pointerdown', tryStartBgm);
-window.addEventListener('keydown', tryStartBgm);
+const armAudioOnce = () => {
+  tryStartBgm();
+  window.removeEventListener('pointerdown', armAudioOnce);
+  window.removeEventListener('keydown', armAudioOnce);
+};
+window.addEventListener('pointerdown', armAudioOnce);
+window.addEventListener('keydown', armAudioOnce);
 
 // Press 'M' to toggle mute/unmute
 window.addEventListener('keydown', (e) => {
@@ -911,207 +416,101 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-function updateMusicMetrics(nowMs) {
-  musicBeat = false;
-  if (!musicAnalyser) return;
-  // overall energy
-  musicAnalyser.getByteFrequencyData(musicFreqData);
-  let sum = 0;
-  for (let i = 0; i < musicFreqData.length; i++) sum += musicFreqData[i];
-  const avg = sum / musicFreqData.length; // 0..255
-  const e = Math.max(0, Math.min(1, avg / 255));
-  musicEnergyMA += (e - musicEnergyMA) * ENERGY_SMOOTH;
-  musicEnergy = e;
-  // rough spectral centroid
-  let wsum = 0, asum = 0;
-  for (let i = 0; i < musicFreqData.length; i++) { const a = musicFreqData[i]; asum += a; wsum += a * i; }
-  musicCentroid = asum > 0 ? (wsum / asum) / (musicFreqData.length - 1) : 0;
-  // beat detection (energy spike over moving average)
-  if (e - musicEnergyMA > BEAT_THRESHOLD && nowMs - lastBeatMs > BEAT_COOLDOWN_MS) {
-    musicBeat = true;
-    lastBeatMs = nowMs;
-    beatLightBoost = 0.5; // spike added to light intensity
-  } else {
-    beatLightBoost = Math.max(0, beatLightBoost * 0.9);
+
+
+
+const game = new Game({
+  scene,
+  tubeGeometry,
+  frames,
+  boxes,
+  spheres,
+  startGame,
+  pauseGame,
+  resumeGame,
+  startNewGame
+});
+
+const gameLoop = new GameLoop((t, dt) => {
+  game.updateMusicMetrics(t);
+  game.ctx = { ...game.ctx, tubeGeometry, frames, frameSegments, camera, player, prevPlayerPos, playerDistance, shipOffsetX, shipOffsetY, shipOffsetZ, shipBankFactor, shipPitchFactor };
+  game.updateCamera(t, dt);
+  game.changeLightColor(t);
+  game.ctx = {
+    ...game.ctx,
+    boxes,
+    spheres,
+    player,
+    prevPlayerPos,
+    scene,
+    gateSystem,
+    light,
+    setCloudsColor,
+    lineMaterial,
+    tubeMaterial,
+    // SFX/mute hooks used by Game.addScore/disintegrateBox
+    sfxPointReady: !!(sfxPoint && sfxPoint.buffer),
+    sfxPoint,
+    sfxExplosionReady: !!(sfxExplosion && sfxExplosion.buffer),
+    sfxExplosion,
+    sfxLazerGunReady: !!(sfxLazerGun && sfxLazerGun.buffer),
+    isMuted: () => bgmMuted,
+    // Score/stage hooks
+    getScore: () => score,
+    setScore: (v) => { score = v; },
+    getStage: () => currentStage,
+    setStage: (s) => { currentStage = s; },
+    stage2score,
+    stage3score,
+    setHazardsShown: (v) => { hazardsShown = !!v; },
+    levelUpEl,
+    countDown,
+    COUNTDOWN_MS: COUNTDOWN_SECONDS * 1000
+  };
+  game.ctx.playerRadius = 0.03;
+  game.checkCollisions(hazardsShown);
+  game.updateMovers(dt, () => currentStage);
+  if (currentStage >= 3) {
+    laserSystem.update(dt);
+    const hit = laserSystem.findHitBox(boxes);
+    if (hit) {
+      const { laserIndex, boxIndex } = hit;
+      const box = boxes[boxIndex];
+      game.disintegrateBox(box, false);
+      boxes.splice(boxIndex, 1);
+      laserSystem.removeAt(laserIndex);
+    }
   }
-}
-
-//create a function that changes the color of the light randomly as camera moves
-//color changes should change slowly and smoothly
-function changeLightColor(t) {
-    // base hue from time, lightly biased by spectral centroid
-    const baseH = (t * 0.0001) % 1;
-    const h = baseH * 0.9 + musicCentroid * 0.1;
-    light.color.setHSL(h, 1, 0.5);
-    setCloudsColor(h, 1, 0.5);
-    // intensity reacts to energy and beats
-    light.intensity = 2 + 1.2 * musicEnergy + beatLightBoost;
-    // drive tube/wireframe color by music hue as well
-    lineMaterial.color.setHSL(h, 1, 0.6);
-    tubeMaterial.color.setHSL(h, 1, 0.6);
-}
-
-
-function updateCamera(t, dt) {
-    // smooth speed towards target
-    speed += (speedTarget - speed) * 0.08;
-    // advance normalized path position
-    pathU = (pathU + speed * dt * 0.1) % 1; // 0.1 scales world speed
-    const p = pathU;
-    const path = tubeGeometry.parameters.path;
-    const pos = path.getPointAt(p);
-    const nextU = (p + 0.03) % 1; // wrap parameter between 0 and 1
-    const lookAt = path.getPointAt(nextU);
-
-    // smooth mouse input with gentle easing (cubic for fine center control)
-    const ease = (v) => Math.sign(v) * Math.pow(Math.abs(v), 0.7);
-    mouseSmoothed.x += (ease(mouseTarget.x) - mouseSmoothed.x) * 0.5;
-    mouseSmoothed.y += (ease(mouseTarget.y) - mouseSmoothed.y) * 0.5;
-
-    // get Frenet frame (normal/binormal) at this segment
-    const idx = Math.floor(p * frameSegments);
-    const normal = frames.normals[idx % frameSegments].clone();
-    const binormal = frames.binormals[idx % frameSegments].clone();
-
-    // spring-damper for lateral offset inside tube
-    const targetOffset = new THREE.Vector2(
-        mouseSmoothed.x * crossRadius,
-        mouseSmoothed.y * crossRadius
-    );
-    // acceleration = k(x_target - x) - c*v
-    const accelX = lateralStiffness * (targetOffset.x - lateralOffset.x) - lateralDamping * lateralVelocity.x;
-    const accelY = lateralStiffness * (targetOffset.y - lateralOffset.y) - lateralDamping * lateralVelocity.y;
-    lateralVelocity.x += accelX * dt;
-    lateralVelocity.y += accelY * dt;
-    lateralOffset.x += lateralVelocity.x * dt;
-    lateralOffset.y += lateralVelocity.y * dt;
-
-    const offset = normal.clone().multiplyScalar(lateralOffset.x)
-        .add(binormal.clone().multiplyScalar(lateralOffset.y));
-
-    // Keep camera centered on the spline (no lateral mouse offset)
-    const camPos = pos.clone();
-    // position player in front of camera along the forward vector
-    const forward = new THREE.Vector3().subVectors(lookAt, camPos).normalize();
-    // Compute viewport-aligned axes so cursor mapping is consistent
-    const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
-    const upScreen = new THREE.Vector3().crossVectors(right, forward).normalize();
-    // Invert vertical so moving cursor up moves ship up on screen
-    const offsetScreen = right.clone().multiplyScalar(mouseSmoothed.x * crossRadius)
-      .add(upScreen.clone().multiplyScalar(-mouseSmoothed.y * crossRadius));
-    // Ship moves within the tube by mouse, using screen-aligned axes
-    const playerPos = camPos.clone()
-      .add(right.clone().multiplyScalar(shipOffsetX))
-      .add(upScreen.clone().multiplyScalar(shipOffsetY))
-      .add(forward.clone().multiplyScalar(playerDistance + shipOffsetZ))
-      .add(offsetScreen);
-    prevPlayerPos.copy(player.position);
-    player.position.copy(playerPos);
-    player.lookAt(lookAt);
-    // Ensure the ship points away from the camera (Three.js lookAt points -Z toward target)
-    // Flip around Y so the ship's nose faces forward along the tunnel
-    player.rotateY(Math.PI);
-    // Bank the ship based on lateral lean (left/right) inside the tube
-    const leanX = THREE.MathUtils.clamp(mouseSmoothed.x, -1, 1);
-    const leanY = -THREE.MathUtils.clamp(mouseSmoothed.y, -1, 1);
-    const bankAngle = -leanX * shipBankFactor;
-    const pitchAngle = leanY * shipPitchFactor;
-    const bankQuat = new THREE.Quaternion().setFromAxisAngle(forward, bankAngle);
-    const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, pitchAngle);
-    player.quaternion.multiply(bankQuat).multiply(pitchQuat);
-    camera.position.copy(camPos);
-    // smooth look-at for reduced jitter
-    lookAtSmoothed.lerp(lookAt, 0.35);
-    camera.lookAt(lookAtSmoothed);
-}
-
-let prevTimeMs = 0;
-function animateLoop(t = 0){
-    if (!isRunning) return;
-    rafId = requestAnimationFrame(animateLoop);
-    const dt = ((t - prevTimeMs) * 0.001) || 0;
-    prevTimeMs = t;
-    updateMusicMetrics(t);
-    updateCamera(t, dt);
-    changeLightColor(t);
-    checkBoxesForDisintegration();
-    checkSpheresForPenalty();
-    // Stage 3: move obstacles inside tube and bounce off walls
-    if (currentStage >= 3) {
-      const path = tubeGeometry.parameters.path;
-      const tubeRadius = 0.5;
-      const maxR = tubeRadius * 0.95;
-      const updateMover = (obj) => {
-        const d = obj.userData;
-        if (!d || !d.movable) return;
-        d.ox += (d.vx || 0) * dt;
-        d.oy += (d.vy || 0) * dt;
-        const rNow = Math.hypot(d.ox, d.oy);
-        if (rNow > maxR) {
-          const nx = d.ox / (rNow || 1);
-          const ny = d.oy / (rNow || 1);
-          const dot = (d.vx || 0) * nx + (d.vy || 0) * ny;
-          d.vx = (d.vx || 0) - 2 * dot * nx;
-          d.vy = (d.vy || 0) - 2 * dot * ny;
-          const k = maxR / (rNow || 1);
-          d.ox *= k; d.oy *= k;
-        }
-        const idx = Math.floor((d.u || 0) * frameSegments);
-        const normal = frames.normals[idx % frameSegments];
-        const binormal = frames.binormals[idx % frameSegments];
-        const center = path.getPointAt(d.u || 0);
-        obj.position.copy(center)
-          .add(normal.clone().multiplyScalar(d.ox))
-          .add(binormal.clone().multiplyScalar(d.oy));
-      };
-      for (let i = 0; i < boxes.length; i++) updateMover(boxes[i]);
-      for (let i = 0; i < spheres.length; i++) updateMover(spheres[i]);
-    }
-    checkGates();
-    // update lasers and check for hits on boxes (only Stage 3+)
-    if (currentStage >= 3) {
-      laserSystem.update(dt);
-      const hit = laserSystem.findHitBox(boxes);
-      if (hit) {
-        const { laserIndex, boxIndex } = hit;
-        const box = boxes[boxIndex];
-        disintegrateBox(box, false); // no penalty for laser hit
-        boxes.splice(boxIndex, 1);
-        laserSystem.removeAt(laserIndex);
-      }
-    }
-    updateParticles(dt);
-    updateClouds(t, dt);
-    composer.render();
+  game.updateParticles(dt);
+  updateClouds(t, dt);
+  composer.render();
     controls.update();
-    updateScore();
-}
+  updateScore();
+});
 
 function startGame(){
   if (isRunning) return;
   isRunning = true;
-  prevTimeMs = performance.now();
-  rafId = requestAnimationFrame(animateLoop);
+  gameLoop.start();
   if (bgmReady && bgmMuted === false && !bgm.isPlaying) bgm.play();
   // Delay hazards visibility for 2 seconds to give the player room
   hazardsShown = false;
-  clearObstacles();
-  setTimeout(() => { hazardsShown = true; spawnObstacles(); }, COUNTDOWN_SECONDS * 1000);
+  game.clearObstacles();
+  setTimeout(() => { hazardsShown = true; game.spawnObstacles(); }, COUNTDOWN_SECONDS * 1000);
   countDown();
 }
 
 function pauseGame(){
   if (!isRunning) return;
   isRunning = false;
-  if (rafId) cancelAnimationFrame(rafId);
+  gameLoop.pause();
   if (bgm && bgm.isPlaying) bgm.pause();
 }
 
 function resumeGame(){
   if (isRunning) return;
   isRunning = true;
-  prevTimeMs = performance.now();
-  rafId = requestAnimationFrame(animateLoop);
+  gameLoop.resume();
   if (bgmReady && bgmMuted === false && !bgm.isPlaying) bgm.play();
 }
 
@@ -1119,7 +518,7 @@ function startNewGame(){
   // Restart full game: reset obstacles and score, then start with spawn delay
   score = 0; streak = 0; multiplier = 1; updateScore();
   hazardsShown = false;
-  clearObstacles();
+  game.clearObstacles();
   resetToStartOfSpline();
   hasStarted = true;
   isRunning = false; // ensure consistent start
