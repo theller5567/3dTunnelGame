@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { createCircleSpriteTexture } from './utils.js';
+import { EffectComposer } from 'jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'jsm/postprocessing/UnrealBloomPass.js';
+import { ColladaLoader } from 'jsm/loaders/ColladaLoader.js';
 export class GameLoop {
   constructor(updateFn) {
     this.updateFn = updateFn; // (t, dt) => void
@@ -77,6 +81,8 @@ export class Game {
     this.lateralStiffness = 20;
     this.lateralDamping = 10;
     this.lookAtSmoothed = new THREE.Vector3();
+    this._isRunning = false;
+    this.health = 10;
   }
   start() { this.api && this.api.startGame && this.api.startGame(); }
   pause() { this.api && this.api.pauseGame && this.api.pauseGame(); }
@@ -163,6 +169,44 @@ export class Game {
         this.markAssetLoaded();
       }, undefined, (err) => { try { console.error('[Game] SFX explosion load error', err); } catch(_e) {} this.markAssetLoaded(); });
     }
+  }
+
+  loadModel() {
+    const {
+      assetLoadingManager,
+      player,
+      shipScale = 0.02,
+      shipYaw = 0,
+      shipPitch = -(Math.PI / 2),
+      shipRoll = Math.PI / 2,
+      shipForwardAdjustY = Math.PI,
+    } = this.ctx || {};
+    if (!player) { try { console.warn('[Game] loadModel skipped: missing player'); } catch(_){} return; }
+    const loader = new ColladaLoader(assetLoadingManager);
+    loader.load('assets/models/ship-new.dae', (collada) => {
+      try { console.log('[Game] Model loaded'); } catch(_e) {}
+      const model = collada.scene || collada;
+      model.scale.set(shipScale, shipScale, shipScale);
+      model.rotation.set(shipPitch, shipYaw + shipForwardAdjustY, shipRoll);
+      model.traverse((obj) => {
+        if (obj.isMesh && obj.material) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          mats.forEach((m) => {
+            if (m.color && m.color.getHex && m.color.getHex() === 0x000000) m.color.setHex(0x6666ff);
+            if (m.emissive) {
+              m.emissive.setHex(0x111111);
+              if (typeof m.emissiveIntensity === 'number') m.emissiveIntensity = 0.8;
+            }
+            m.needsUpdate = true;
+          });
+        }
+      });
+      player.add(model);
+      this.markAssetLoaded();
+    }, undefined, (err) => {
+      try { console.warn('[Game] Model failed to load, continuing without it:', err); } catch(_){}
+      this.markAssetLoaded();
+    });
   }
 
   updateCamera(t, dt) {
@@ -332,12 +376,31 @@ export class Game {
     }
   }
 
+  checkHealth() {
+    if (this.health <= 0) {
+      this.gameOver();
+    }
+  }
+
+  gameOver() {
+    const { gameOverEl } = this.ctx || {};
+    if (gameOverEl && gameOverEl.style) {
+      gameOverEl.style.display = 'flex';
+    }
+    // Pause and wait for user to choose Play Again or Quit
+    this.pause();
+    this._isRunning = false;
+    // Reset health immediately for UI; actual restart is triggered by buttons
+    this.health = 10;
+    if (typeof this.ctx?.setHealth === 'function') this.ctx.setHealth(this.health);
+  }
+
   // Box disintegration with particles
   disintegrateBox(boxMesh, penalize = true) {
-    const { scene, sfxExplosionReady, sfxExplosion, isMuted } = this.ctx || {};
+    const { scene, sfxExplosionReady, sfxExplosion, isMuted, setHealth } = this.ctx || {};
     if (!scene || !boxMesh || boxMesh.userData.disintegrated) return;
     boxMesh.userData.disintegrated = true;
-    if (penalize) this.addScore(-1);
+    if (penalize) { this.addScore(-1); this.health = Math.max(0, (this.health || 0) - 1); if (typeof setHealth === 'function') setHealth(this.health); this.checkHealth && this.checkHealth(); }
     const muted = typeof isMuted === 'function' ? !!isMuted() : false;
     if (sfxExplosionReady && sfxExplosion && !muted) {
       sfxExplosion.play();
@@ -423,15 +486,21 @@ export class Game {
     this._stageTransition = true;
     if (typeof setStage === 'function') setStage(targetStage);
     const { levelUpEl, setHazardsShown, gateSystem, COUNTDOWN_MS } = this.ctx || {};
-    // simple stage overlay
+    // simple stage overlay with fade
     if (levelUpEl && levelUpEl.style) {
-      levelUpEl.style.display = 'flex';
       levelUpEl.textContent = `Stage ${targetStage}`;
-      setTimeout(() => { try { if (levelUpEl) levelUpEl.style.display = 'none'; } catch(_){} }, 2000);
+      levelUpEl.style.display = 'flex';
+      levelUpEl.style.opacity = '0';
+      levelUpEl.style.transition = 'opacity 400ms ease';
+      requestAnimationFrame(() => { levelUpEl.style.opacity = '1'; });
+      setTimeout(() => {
+        levelUpEl.style.opacity = '0';
+        setTimeout(() => { try { if (levelUpEl) levelUpEl.style.display = 'none'; } catch(_){} }, 450);
+      }, 1200);
     }
     // stop and reset position/obstacles
-    try { const { bgm } = this.ctx || {}; if (bgm && bgm.isPlaying) bgm.stop(); } catch(_){}
-    this.resetToStart();
+   //try { const { bgm } = this.ctx || {}; if (bgm && bgm.isPlaying) bgm.stop(); } catch(_){}
+    //this.resetToStart();
     if (typeof setHazardsShown === 'function') setHazardsShown(false);
     this.clearObstacles();
     // increase difficulty for stage 2
@@ -441,7 +510,7 @@ export class Game {
       this.speedTarget = Math.min(max, t);
     }
     // spawn after countdown; Stage 3 enables movers
-    const SAFE_START_U = 0.25;
+    const SAFE_START_U = 0.15;
     const delay = (typeof COUNTDOWN_MS === 'number' && COUNTDOWN_MS > 0) ? COUNTDOWN_MS : 10000;
     this.startStageWithCountdown(this.ctx && this.ctx.countDown, () => {
       if (typeof setHazardsShown === 'function') setHazardsShown(true);
@@ -487,10 +556,100 @@ export class Game {
     const baseH = (t * 0.0001) % 1;
     const h = baseH * 0.9 + this.musicCentroid * 0.1;
     light.color.setHSL(h, 1, 0.5);
+    // keep clouds colored to match the light/music
     if (typeof setCloudsColor === 'function') setCloudsColor(h, 1, 0.5);
     light.intensity = 2 + 1.2 * (this.musicEnergy || 0) + (this.beatLightBoost || 0);
     lineMaterial.color.setHSL(h, 1, 0.6);
     tubeMaterial.color.setHSL(h, 1, 0.6);
+  }
+
+  updateClouds(t, dt) {
+    const { cloudSystem, light } = this.ctx || {};
+    if (!cloudSystem || !cloudSystem.update || !light) return;
+    cloudSystem.update(t, dt, light.color, this.musicEnergy || 0, !!this.musicBeat);
+  }
+
+  initRenderer({ mount, width, height, camera, scene }) {
+    if (!camera || !scene) return;
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height, true);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMappingExposure = 1.25;
+    if (mount && mount.appendChild) mount.appendChild(renderer.domElement);
+    const composer = new EffectComposer(renderer);
+    composer.setSize(width, height);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.5, 0.1, 0.0);
+    composer.addPass(bloomPass);
+    this.ctx = { ...this.ctx, renderer, composer };
+    try { console.log('[Game] renderer initialized'); } catch(_){}
+    return { renderer, composer };
+  }
+
+  countDown() {
+    const { countdownEl, COUNTDOWN_MS } = this.ctx || {};
+    if (!countdownEl) return;
+    const seconds = Math.max(1, Math.floor((COUNTDOWN_MS || 10000) / 1000));
+    countdownEl.style.display = 'flex';
+    let value = seconds;
+    const step = () => {
+      countdownEl.textContent = String(value);
+      if (value <= 1) {
+        setTimeout(() => { try { countdownEl.style.display = 'none'; } catch(_){} }, 1000);
+      } else {
+        value -= 1; setTimeout(step, 1000);
+      }
+    };
+    step();
+  }
+
+  updateClouds(t, dt) {
+    const { cloudSystem, light } = this.ctx || {};
+    if (!cloudSystem || !cloudSystem.update || !light) return;
+    cloudSystem.update(t, dt, light.color, this.musicEnergy || 0, !!this.musicBeat);
+  }
+
+  start() {
+    const { startLoop, tryStartBgm, setHazardsShown, COUNTDOWN_MS } = this.ctx || {};
+    if (this._isRunning) return;
+    this._isRunning = true;
+    if (typeof startLoop === 'function') startLoop();
+    if (typeof setHazardsShown === 'function') setHazardsShown(false);
+    this.clearObstacles();
+    const delay = (typeof COUNTDOWN_MS === 'number' && COUNTDOWN_MS > 0) ? COUNTDOWN_MS : 10000;
+    this.countDown();
+    setTimeout(() => {
+      if (typeof setHazardsShown === 'function') setHazardsShown(true);
+      this.spawnObstacles();
+    }, delay);
+    if (typeof tryStartBgm === 'function') tryStartBgm();
+  }
+
+  pause() {
+    const { pauseLoop, bgm } = this.ctx || {};
+    if (!this._isRunning) return;
+    this._isRunning = false;
+    if (typeof pauseLoop === 'function') pauseLoop();
+    try { if (bgm && bgm.isPlaying) bgm.pause(); } catch(_){}
+  }
+
+  resume() {
+    const { resumeLoop, tryStartBgm } = this.ctx || {};
+    if (this._isRunning) return;
+    this._isRunning = true;
+    if (typeof resumeLoop === 'function') resumeLoop();
+    if (typeof tryStartBgm === 'function') tryStartBgm();
+  }
+
+  startNewGame() {
+    const { setScore, setHazardsShown } = this.ctx || {};
+    if (typeof setScore === 'function') setScore(0);
+    if (typeof setHazardsShown === 'function') setHazardsShown(false);
+    this.clearObstacles();
+    this.resetToStart();
+    this._isRunning = false;
+    this.start();
   }
 
   spawnObstacles(boxCount = 150, sphereCount = 170, startU = 0.12) {
@@ -499,11 +658,11 @@ export class Game {
     const path = tubeGeometry.parameters.path;
     const tubeRadius = tubeGeometry.parameters.radius || 0.5;
     const maxR = tubeRadius * 0.9;
-    // boxes
+    // boxes (stratified along u to avoid long empty sections)
     for (let i = 0; i < boxCount; i++) {
       const size = Math.random() * (0.1 - 0.01) + 0.01;
       const geom = new THREE.BoxGeometry(size, size, size);
-      const u = startU + Math.random() * (1 - startU);
+      const u = startU + ((i + Math.random()) / Math.max(1, boxCount)) * (1 - startU);
       const center = path.getPointAt(u);
       const idx = Math.floor(u * frames.tangents.length);
       const normal = frames.normals[idx % frames.normals.length].clone();
@@ -520,11 +679,11 @@ export class Game {
       boxes.push(mesh);
       scene.add(mesh);
     }
-    // spheres
+    // spheres (stratified)
     for (let i = 0; i < sphereCount; i++) {
       const radius = 0.02;
       const geom = new THREE.SphereGeometry(radius, 32, 32);
-      const u = startU + Math.random() * (1 - startU);
+      const u = startU + ((i + Math.random()) / Math.max(1, sphereCount)) * (1 - startU);
       const center = path.getPointAt(u);
       const idx = Math.floor(u * frames.tangents.length);
       const normal = frames.normals[idx % frames.normals.length].clone();
@@ -540,6 +699,14 @@ export class Game {
       spheres.push(mesh);
       scene.add(mesh);
     }
+  }
+
+  ensureObstacleDensity(minBoxes = 120, minSpheres = 140, startU = 0.12) {
+    const { boxes, spheres } = this.ctx || {};
+    if (!boxes || !spheres) return;
+    const needBoxes = Math.max(0, minBoxes - boxes.length);
+    const needSpheres = Math.max(0, minSpheres - spheres.length);
+    if (needBoxes > 0 || needSpheres > 0) this.spawnObstacles(needBoxes, needSpheres, startU);
   }
 
   updateMovers(dt, getStage) {
@@ -643,7 +810,13 @@ export class Game {
     const remaining = Math.max(0, this.minPreloadMs - elapsed);
     const start = () => {
       if (this._watchdog) { clearTimeout(this._watchdog); this._watchdog = null; }
-      if (this.preloaderEl) this.preloaderEl.classList.remove('show');
+      try {
+        if (this.preloaderEl) this.preloaderEl.classList.remove('show');
+        const container = document.querySelector('.container');
+        if (container) container.style.display = 'none';
+        const header = document.querySelector('header');
+        if (header) header.style.display = 'flex';
+      } catch(_){}
       if (this.tryStartBgm) this.tryStartBgm();
       try { console.log('[Game] starting game now'); } catch (_e) {}
       if (this.startGameCb) this.startGameCb();
@@ -756,8 +929,17 @@ export class Game {
     }
 
     // Gates via GateSystem helper
-    if (gateSystem && gateSystem.checkPasses && typeof addScore === 'function') {
-      gateSystem.checkPasses(prevPlayerPos || camPos, camPos, () => addScore(5));
+    if (gateSystem && gateSystem.checkPasses) {
+      gateSystem.checkPasses(prevPlayerPos || camPos, camPos, (gate) => {
+        this.addScore(5);
+        try {
+          if (gate && gate.material) {
+            if (Array.isArray(gate.material)) gate.material.forEach(m => m && (m.color ? m.color.set(0xff0000) : null));
+            else if (gate.material.color) gate.material.color.set(0xff0000);
+          }
+        } catch (_) {}
+        // removal is handled inside GateSystem after callback delay
+      });
     }
   }
 }

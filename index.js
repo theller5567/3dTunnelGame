@@ -16,20 +16,6 @@ import { GameLoop, Game } from './src/Game.js';
 import { ColladaLoader } from 'jsm/loaders/ColladaLoader.js';
 import { initPreviewSpaceship } from './src/previewShip.js';
 
-const w = window.innerWidth;
-const h = window.innerHeight;
-
-const fov = 75;
-const aspect = w / h;
-const near = 0.1;
-const far = 1000;
-let score = 35;
-let currentStage = 1;     // Stage 1 baseline
-let stage2score = 50;  // Stage 2 threshold
-let stage3score = 100;  // Stage 3 threshold
-let isStageTransition = false; // guard during stage transitions
-const SPAWN_START_U = 0.12; // 0.0..1.0 param along spline; 0.15 ≈ 15% down the tube
-const OVERLAY_DURATION_MS = 1200; // how long the four strips take to slide away
 
 const scoreText = document.querySelector('.score-value');
 const levelUpEl = document.querySelector('.level-up');
@@ -43,6 +29,29 @@ const pauseButton = document.querySelector('.pause-button');
 const restartButton = document.querySelector('.restart-button');
 const header = document.querySelector('header');
 const countdown = document.querySelector('.countdown');
+const healthText = document.querySelector('.health-value');
+const gameOverEl = document.querySelector('.game-over');
+const btnPlayAgain = document.querySelector('.btn-play-again');
+const btnQuit = document.querySelector('.btn-quit');
+
+
+const w = window.innerWidth;
+const h = window.innerHeight;
+
+const fov = 75;
+const aspect = w / h;
+const near = 0.1;
+const far = 1000;
+let score = 35;
+let health = 10;
+let currentStage = 1;     // Stage 1 baseline
+let stage2score = 50;  // Stage 2 threshold
+let stage3score = 100;  // Stage 3 threshold
+let isStageTransition = false; // guard during stage transitions
+const SPAWN_START_U = 0.12; // 0.0..1.0 param along spline; 0.15 ≈ 15% down the tube
+const OVERLAY_DURATION_MS = 1200; // how long the four strips take to slide away
+
+
 const COUNTDOWN_SECONDS = 10; // keep obstacles spawn in sync with countdown
 
 let isRunning = false; // game loop state
@@ -55,18 +64,6 @@ let pendingStart = false; // start requested but waiting for assets
 let assetsReady = false; // all assets loaded
 let TOTAL_ASSETS = USE_SHIP_MODEL ? 5 : 4; // model (optional) + 4 audio files
 let loadedAssets = 0;
-
-
-function markAssetLoaded(){
-  loadedAssets += 1;
-  game.totalAssets = TOTAL_ASSETS;
-  game.loadedAssets = loadedAssets;
-  game.preloaderEl = preloader;
-  game.tryStartBgm = tryStartBgm;
-  game.startGameCb = () => { startGame(); pendingStart = false; };
-  game.markAssetLoaded();
-  assetsReady = game.assetsReady;
-}
 
 // Music analysis moved into Game
 // scroll-controlled speed
@@ -82,9 +79,9 @@ const scene = new THREE.Scene();
     scene.fog = new THREE.FogExp2(color, density);
   }
 
-  function updateScore() {
-    scoreText.textContent = `${score}`;
-  }
+// Initialize score/health display
+if (scoreText) scoreText.textContent = `${score}`;
+if (healthText) healthText.textContent = `${health}`;
 
 
   startButton.addEventListener('click', (e) => {
@@ -112,7 +109,7 @@ const scene = new THREE.Scene();
       pendingStart = true;
       if (loaderPctEl) loaderPctEl.textContent = '0%';
       if (loaderFillEl) loaderFillEl.style.width = '0%';
-      if (USE_SHIP_MODEL) { loadModel(); }
+      if (USE_SHIP_MODEL) { game.ctx = { ...game.ctx, assetLoadingManager, player, shipScale, shipYaw, shipPitch, shipRoll, shipForwardAdjustY }; game.loadModel(); }
       // route audio loads via Game helper
       // provide audio deps to Game so it can request files
       game.ctx = { ...game.ctx, audioLoader, audioListener, bgm, sfxPoint, sfxExplosion, sfxLazerGun, bgmMuted, bgmBaseVolume };
@@ -178,19 +175,36 @@ const scene = new THREE.Scene();
     pauseButton.textContent = 'Pause';
   });
 
+  // Game Over actions
+  if (btnPlayAgain) {
+    btnPlayAgain.addEventListener('click', () => {
+      if (gameOverEl && gameOverEl.style) gameOverEl.style.display = 'none';
+      // Reset everything and start a new run
+      if (bgm && bgm.isPlaying) bgm.stop();
+      resetToStartOfSpline();
+      startNewGame();
+      tryStartBgm();
+    });
+  }
+  if (btnQuit) {
+    btnQuit.addEventListener('click', () => {
+      // Fully quit back to title
+      if (gameOverEl && gameOverEl.style) gameOverEl.style.display = 'none';
+      isRunning = false;
+      game.pause();
+      // Hide canvas UI; show title and header appropriately
+      const mount = document.body.querySelector('.game-canvas');
+      if (mount) mount.innerHTML = '';
+      header.style.display = 'none';
+      container.style.display = 'flex';
+      startButton.style.display = 'inline-block';
+      h1Text.style.opacity = 1;
+      hasStarted = false;
+    });
+  }
 
-const renderer = new THREE.WebGLRenderer({antialias: true});
-renderer.setSize(w, h, true);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMappingExposure = 1.25;
-document.body.querySelector('.game-canvas').appendChild(renderer.domElement);
 
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.05;
-controls.enabled = false;
+// renderer/controls initialized after Game instance is created
 
 // allow user to move within the tube cross-section using mouse position (moved to Game)
 const prevPlayerPos = new THREE.Vector3();
@@ -220,72 +234,20 @@ assetLoadingManager.onProgress = (url, itemsLoaded, itemsTotal) => {
 };
 assetLoadingManager.onLoad = () => { /* progress handled by manual counters */ };
 
-const colladaLoader = new ColladaLoader(assetLoadingManager);
-function loadModel(){
-colladaLoader.load('assets/models/ship-new.dae', (collada) => {
-    const model = collada.scene || collada;
-    // scale to fit inside tube comfortably
-    model.scale.set(shipScale, shipScale, shipScale);
-    // Base orientation: set pitch/yaw/roll here; player.lookAt keeps nose forward
-    // Extra yaw to ensure nose points away from camera along tunnel
-    model.rotation.set(shipPitch, shipYaw + shipForwardAdjustY, shipRoll);
-    // If the model uses basic materials, ensure visible color
-    model.traverse((obj) => {
-      if (obj.isMesh && obj.material) {
-        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-        mats.forEach((m) => {
-          if (m.color && m.color.getHex && m.color.getHex() === 0x000000) m.color.setHex(0x6666ff);
-          if (m.emissive) {
-            m.emissive.setHex(0x111111);
-            if (typeof m.emissiveIntensity === 'number') m.emissiveIntensity = 0.8;
-          }
-          m.needsUpdate = true;
-        });
-      }
-    });
-    player.add(model);
-    playerLoaded = true;
-    markAssetLoaded();
-}, (xhr) => {
-    // progress handler (optional)
-}, (error) => {
-    console.warn('Model failed to load, continuing without it:', error);
-    // Ensure the preloader can finish
-    playerLoaded = false;
-    markAssetLoaded();
-});
-}
+// model loading handled by Game.loadModel()
 
-// Show a 5→1 countdown overlay, then hide. Spawning/hazards handled elsewhere
-function countDown(){
-    if (!countdown) return;
-    countdown.style.display = 'flex';
-    let value = COUNTDOWN_SECONDS;
-    const update = () => {
-        if (!countdown) return;
-        countdown.textContent = String(value);
-        if (value <= 1) {
-            setTimeout(() => { if (countdown) countdown.style.display = 'none'; }, 1000);
-        } else {
-            value -= 1;
-            setTimeout(update, 1000);
-        }
-    };
-    update();
-}
+// countdown handled by Game.countDown via ctx (optional)
 
 // Lights attached to the player so the model is clearly visible
-const playerLight = new THREE.PointLight(0xffffff, 3.0, 10, 1);
-playerLight.position.set(0, 0.15, 0.3);
-player.add(playerLight);
-const playerBackLight = new THREE.PointLight(0x88aaff, 1.5, 8, 1);
-playerBackLight.position.set(0, -0.1, -0.4);
-player.add(playerBackLight);
-const playerHemi = new THREE.HemisphereLight(0xffffff, 0x334455, 1.0);
-player.add(playerHemi);
+// attach player lights
+const playerLight = new THREE.PointLight(0xffffff, 3.0, 10, 1); playerLight.position.set(0, 0.15, 0.3); player.add(playerLight);
+const playerBackLight = new THREE.PointLight(0x88aaff, 1.5, 8, 1); playerBackLight.position.set(0, -0.1, -0.4); player.add(playerBackLight);
+const playerHemi = new THREE.HemisphereLight(0xffffff, 0x334455, 1.0); player.add(playerHemi);
 
 function onPointerMove(e){
-    const rect = renderer.domElement.getBoundingClientRect();
+    const dom = (game && game.ctx && game.ctx.renderer && game.ctx.renderer.domElement) ? game.ctx.renderer.domElement : null;
+    if (!dom) return;
+    const rect = dom.getBoundingClientRect();
     const mx = (e.clientX - rect.left) / rect.width;   // 0..1
     const my = (e.clientY - rect.top) / rect.height;  // 0..1
     game.mouseTarget.x = (mx - 0.5) * 2; // -1..1
@@ -315,12 +277,7 @@ scene.add(tubeMesh);
 const frameSegments = 2000;
 const frames = spline.computeFrenetFrames(frameSegments, true);
 
-// make the tube line/tube material glow using effect composer
-const composer = new EffectComposer(renderer);
-composer.setSize(w, h);
-composer.addPass(new RenderPass(scene, camera));
-const bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.5, 0.1, 0.0);
-composer.addPass(bloomPass);
+// composer will be initialized after Game initializes the renderer
 
 const edgesGeometry = new THREE.EdgesGeometry(tubeGeometry, 0.2);
 const lineMaterial = new THREE.LineBasicMaterial({color: 0xffffff});
@@ -329,7 +286,6 @@ scene.add(tubeLines);
 
 // Gates (modularized)
 const gateSystem = new GateSystem(scene, tubeGeometry.parameters.path, SPAWN_START_U);
-const laserSystem = new LaserSystem(scene, composer);
 
 // clouds system
 const cloudSystem = new CloudSystem(scene, tubeGeometry.parameters.path, frames, { additive: true });
@@ -342,9 +298,7 @@ const boxes = [];
 const spheres = [];
     
 // cloud system update
-function updateClouds(t, dt) {
-  cloudSystem.update(t, dt, light.color, game.musicEnergy, game.musicBeat);
-}
+// cloud updates handled by game.updateClouds
 
 // Reset ship/camera to the start of the spline (fresh-run pose)
 function resetToStartOfSpline(){
@@ -431,20 +385,35 @@ const game = new Game({
   startNewGame
 });
 
+// Initialize renderer and controls now that game exists
+const mount = document.body.querySelector('.game-canvas');
+game.initRenderer({ mount, width: w, height: h, camera, scene });
+const controls = new OrbitControls(camera, game.ctx.renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.enabled = false;
+
+// composer-dependent systems
+const composer = game.ctx.composer;
+const laserSystem = new LaserSystem(scene, composer);
+
 const gameLoop = new GameLoop((t, dt) => {
   game.updateMusicMetrics(t);
-  game.ctx = { ...game.ctx, tubeGeometry, frames, frameSegments, camera, player, prevPlayerPos, playerDistance, shipOffsetX, shipOffsetY, shipOffsetZ, shipBankFactor, shipPitchFactor };
+  game.ctx = { ...game.ctx, tubeGeometry, frames, frameSegments, camera, player, prevPlayerPos, playerDistance, shipOffsetX, shipOffsetY, shipOffsetZ, shipBankFactor, shipPitchFactor, cloudSystem, startLoop: () => gameLoop.start(), pauseLoop: () => gameLoop.pause(), resumeLoop: () => gameLoop.resume() };
   game.updateCamera(t, dt);
   game.changeLightColor(t);
   game.ctx = {
     ...game.ctx,
     boxes,
     spheres,
+    gameOverEl,
+    healthText,
     player,
     prevPlayerPos,
     scene,
     gateSystem,
     light,
+    cloudSystem,
     setCloudsColor,
     lineMaterial,
     tubeMaterial,
@@ -457,15 +426,19 @@ const gameLoop = new GameLoop((t, dt) => {
     isMuted: () => bgmMuted,
     // Score/stage hooks
     getScore: () => score,
-    setScore: (v) => { score = v; },
+    setScore: (v) => { score = v; if (scoreText) scoreText.textContent = `${score}`; },
+    getHealth: () => health,
+    setHealth: (v) => { health = v; if (healthText) healthText.textContent = `${health}`; },
     getStage: () => currentStage,
     setStage: (s) => { currentStage = s; },
     stage2score,
     stage3score,
     setHazardsShown: (v) => { hazardsShown = !!v; },
     levelUpEl,
-    countDown,
-    COUNTDOWN_MS: COUNTDOWN_SECONDS * 1000
+    countdownEl: document.querySelector('.countdown'),
+    COUNTDOWN_MS: COUNTDOWN_SECONDS * 1000,
+    gameOverEl,
+    tryStartBgm
   };
   game.ctx.playerRadius = 0.03;
   game.checkCollisions(hazardsShown);
@@ -482,47 +455,27 @@ const gameLoop = new GameLoop((t, dt) => {
     }
   }
   game.updateParticles(dt);
-  updateClouds(t, dt);
+  game.updateClouds(t, dt);
   composer.render();
     controls.update();
-  updateScore();
+  // score display is updated via ctx.setScore
 });
 
-function startGame(){
-  if (isRunning) return;
-  isRunning = true;
-  gameLoop.start();
-  if (bgmReady && bgmMuted === false && !bgm.isPlaying) bgm.play();
-  // Delay hazards visibility for 2 seconds to give the player room
-  hazardsShown = false;
-  game.clearObstacles();
-  setTimeout(() => { hazardsShown = true; game.spawnObstacles(); }, COUNTDOWN_SECONDS * 1000);
-  countDown();
-}
+// Provide lifecycle and UI hooks to Game early so start() can use them before the loop
+game.ctx = {
+  ...game.ctx,
+  startLoop: () => gameLoop.start(),
+  pauseLoop: () => gameLoop.pause(),
+  resumeLoop: () => gameLoop.resume(),
+  setHazardsShown: (v) => { hazardsShown = !!v; },
+  countdownEl: document.querySelector('.countdown'),
+  COUNTDOWN_MS: COUNTDOWN_SECONDS * 1000
+};
 
-function pauseGame(){
-  if (!isRunning) return;
-  isRunning = false;
-  gameLoop.pause();
-  if (bgm && bgm.isPlaying) bgm.pause();
-}
+function startGame(){ isRunning = true; game.start(); }
 
-function resumeGame(){
-  if (isRunning) return;
-  isRunning = true;
-  gameLoop.resume();
-  if (bgmReady && bgmMuted === false && !bgm.isPlaying) bgm.play();
-}
+function pauseGame(){ isRunning = false; game.pause(); }
 
-function startNewGame(){
-  // Restart full game: reset obstacles and score, then start with spawn delay
-  score = 0; streak = 0; multiplier = 1; updateScore();
-  hazardsShown = false;
-  game.clearObstacles();
-  resetToStartOfSpline();
-  hasStarted = true;
-  isRunning = false; // ensure consistent start
-  // start fresh with countdown and synchronized spawn
-  startGame();
+function resumeGame(){ isRunning = true; game.resume(); }
 
-}
+function startNewGame(){ game.startNewGame(); }

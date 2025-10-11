@@ -38,10 +38,20 @@
         <button class="pause-button">Pause</button>
         <button class="restart-button">Restart</button>
       </div>
+      <div class="health">
+        <h3>Health: <span class="health-value">10</span></h3>
+      </div>
       <div class="score">
         <h3>Score: <span class="score-value">0</span></h3>
       </div>
     </header>
+    <div class="game-over" style="position:fixed; inset:0; display:none; align-items:center; flex-direction:column; justify-content:center; z-index:2000; background:rgba(0,0,0,0.6);">
+      <h2 style="color:#ff4d4d; font-size:8rem; text-shadow:0 0 12px rgba(255,0,0,0.7); margin-bottom:24px;">Game Over</h2>
+      <div style="display:flex; gap:16px;">
+        <button class="btn-play-again" style="padding:10px 18px; font-size:18px;">Play Again</button>
+        <button class="btn-quit" style="padding:10px 18px; font-size:18px;">Quit</button>
+      </div>
+    </div>
     <div class="game-canvas"></div>
     <div class="container">
         <h1 class="title">Lucas Revenge
