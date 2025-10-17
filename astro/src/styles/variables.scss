@@ -1,0 +1,17 @@
+:root {
+    --primary-color: hsl(309, 100.00%, 50.00%);
+    --secondary-color: hsl(0, 0.00%, 0.00%);
+    --bg: #000000;
+    --clr-1: #00c2ff;
+    --clr-2: #33ff8c;
+    --clr-3: #ffc640;
+    --clr-4: #e54cff;
+
+    --font-orbitron: "Orbitron", sans-serif;
+    --font-roboto: "Roboto", sans-serif;
+    
+    --blur: 1rem;
+    --fs: clamp(3rem, 8vw, 7rem);
+    --ls: clamp(-1.75px, -0.25vw, -3.5px);
+}
+

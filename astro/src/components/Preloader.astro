@@ -1,0 +1,12 @@
+---
+const { pct = 0 } = Astro.props;
+---
+
+<div id="preloader">
+  <div class="loader-content">
+    <div class="loader-text">Loading <span id="loader-pct">{pct}%</span></div>
+    <div class="loader-bar">
+      <div class="loader-bar-fill" id="loader-fill" style={`width: ${pct}%`}></div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,19 @@
+@use './variables';
+
+body {
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  font-family: var(--font-roboto);
+  font-optical-sizing: auto;
+  font-weight: 400;
+  font-style: normal;
+  background-color: #000;
+  overflow: hidden;
+}
+
+.bebas-neue-regular {
+  font-family: "Bebas Neue", sans-serif;
+  font-weight: 400;
+  font-style: normal;
+}
+
