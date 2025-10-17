@@ -1,3 +1,5 @@
 assets/models/ship-new.dae
 # Ignore all COLLADA model files repo-wide
 *.dae
+# macOS system files
+.DS_Store
