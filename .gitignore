@@ -3,3 +3,5 @@ assets/models/ship-new.dae
 *.dae
 # macOS system files
 .DS_Store
+# Local safety backups (do not commit)
+astro_backup_*/
