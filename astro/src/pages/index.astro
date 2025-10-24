@@ -2,6 +2,7 @@
 import '../styles.scss';
 import Preloader from '../components/Preloader.astro';
 import Header from '../components/Header.astro';
+import gameScript from '../scripts/index.js?url';
 ---
 <html lang="en">
   <head>
@@ -43,9 +44,6 @@ import Header from '../components/Header.astro';
       <h2>Stage 3</h2>
     </section>
 
-    <script type="module">
-      // Use a relative import so Astro/Vite bundles this for production
-      import '../scripts/index.js';
-    </script>
+    <script type="module" src={gameScript}></script>
   </body>
 </html>
