@@ -44,8 +44,8 @@ import Header from '../components/Header.astro';
     </section>
 
     <script type="module">
-      // Use npm-based imports instead of import maps
-      import '/src/scripts/index.js';
+      // Use a relative import so Astro/Vite bundles this for production
+      import '../scripts/index.js';
     </script>
   </body>
 </html>
