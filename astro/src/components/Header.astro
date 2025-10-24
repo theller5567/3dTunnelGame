@@ -1,5 +1,5 @@
 ---
-const { health = 10, score = 0 } = Astro.props;
+const { health = 10, score = 0, currentStage = 1 } = Astro.props;
 ---
 
 <header>
@@ -11,6 +11,9 @@ const { health = 10, score = 0 } = Astro.props;
       <h3>Health: <span class="health-value">{health}</span></h3>
       <div class="health-bar" aria-label="health"><div class="health-bar-fill"></div></div>
     </div>
+    <div class="stageLevel">
+      <h3>Stage: <span class="stage-value">{currentStage}</span></h3>
+    </div>  
     <div class="score">
       <h3>Score: <span class="score-value">{score}</span></h3>
     </div>

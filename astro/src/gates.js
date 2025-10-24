@@ -18,32 +18,55 @@ export class GateSystem {
         this.gates.length = 0;
     }
 
-    spawn(count = 10, startU = this.spawnStartU) {
+    spawn(count = 10, startU = this.spawnStartU, options = {}) {
+        const {
+          radiusMin = 0.25,
+          radiusMax = 0.25,
+          // placeholders for Step 3 (movement); fine to leave unused for now
+          movers = false,
+          moveSpeed = 0,
+          moveAmplitude = 0
+        } = options;
+      
+        const rMin = Math.min(radiusMin, radiusMax);
+        const rMax = Math.max(radiusMin, radiusMax);
+      
         for (let i = 0; i < count; i++) {
-            const u = (startU + Math.random() * (1 - startU)) % 1;
-            const center = this.path.getPointAt(u);
-            const tangent = this.path.getTangentAt(u).normalize();
-            const arbitrary = Math.abs(tangent.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
-            const normal = new THREE.Vector3().crossVectors(tangent, arbitrary).normalize();
-            const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize();
-            const ringRadius = 0.25;
-            const tube = new THREE.TorusGeometry(ringRadius, 0.01, 8, 64);
-            const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
-            const ring = new THREE.Mesh(tube, mat);
-            const m = new THREE.Matrix4();
-            m.makeBasis(normal, binormal, tangent);
-            ring.matrixAutoUpdate = false;
-            ring.position.copy(center);
-            ring.setRotationFromMatrix(m);
-            ring.updateMatrix();
-            ring.userData.center = center.clone();
-            ring.userData.planeNormal = tangent.clone();
-            ring.userData.ringRadius = ringRadius;
-            ring.userData.halfWidth = 0.02;
-            this.scene.add(ring);
-            this.gates.push(ring);
+          const u = (startU + Math.random() * (1 - startU)) % 1;
+          const center = this.path.getPointAt(u);
+          const tangent = this.path.getTangentAt(u).normalize();
+          const arbitrary = Math.abs(tangent.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+          const normal = new THREE.Vector3().crossVectors(tangent, arbitrary).normalize();
+          const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize();
+      
+          const ringRadius = rMin + Math.random() * (rMax - rMin); // randomized per ring
+          const tube = new THREE.TorusGeometry(ringRadius, 0.01, 8, 64);
+          const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+          const ring = new THREE.Mesh(tube, mat);
+      
+          const m = new THREE.Matrix4();
+          m.makeBasis(normal, binormal, tangent);
+          ring.matrixAutoUpdate = false;
+          ring.position.copy(center);
+          ring.setRotationFromMatrix(m);
+          ring.updateMatrix();
+      
+          ring.userData.center = center.clone();
+          ring.userData.planeNormal = tangent.clone();
+          ring.userData.ringRadius = ringRadius;
+          ring.userData.halfWidth = 0.02;
+          ring.userData.u = u; // store param location along the path for orientation recompute
+      
+          // stash movement config (will use in Step 3)
+          ring.userData.movers = !!movers;
+          ring.userData.moveSpeed = moveSpeed;
+          ring.userData.moveAmplitude = moveAmplitude;
+          ring.userData.movePhase = Math.random() * Math.PI * 2;
+      
+          this.scene.add(ring);
+          this.gates.push(ring);
         }
-    }
+      }
 
     // returns number of gates passed this frame
     checkPasses(prevPos, currPos, onPass) {
@@ -123,6 +146,40 @@ export class GateSystem {
             }
         }
         return count;
+    }
+
+    // Animate moving gates across the tube cross-section
+    update(t, dt) {
+        if (!this.gates || !this.gates.length) return;
+        const timeSec = (typeof t === 'number') ? (t * 0.001) : 0; // t arrives in ms from raf
+        for (let i = 0; i < this.gates.length; i++) {
+            const g = this.gates[i];
+            if (!g || !g.userData) continue;
+            const d = g.userData;
+            if (!d.movers || !this.path) continue;
+            const u = (typeof d.u === 'number') ? d.u : 0;
+            const baseCenter = this.path.getPointAt(u);
+            const tangent = this.path.getTangentAt(u).normalize();
+            const arbitrary = Math.abs(tangent.y) < 0.9 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+            const normal = new THREE.Vector3().crossVectors(tangent, arbitrary).normalize();
+            const binormal = new THREE.Vector3().crossVectors(tangent, normal).normalize();
+
+            const speed = d.moveSpeed || 0;
+            const amp = d.moveAmplitude || 0;
+            const phase = d.movePhase || 0;
+            const theta = phase + timeSec * speed;
+            const offset = normal.clone().multiplyScalar(Math.cos(theta) * amp)
+                .add(binormal.clone().multiplyScalar(Math.sin(theta) * amp));
+
+            g.position.copy(baseCenter).add(offset);
+            const m = new THREE.Matrix4();
+            m.makeBasis(normal, binormal, tangent);
+            g.setRotationFromMatrix(m);
+            g.updateMatrix();
+            // keep center current for collision checks
+            d.center = g.position.clone();
+            d.planeNormal = tangent.clone();
+        }
     }
 }
 

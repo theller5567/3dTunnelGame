@@ -12,7 +12,7 @@ import Header from '../components/Header.astro';
   </head>
   <body>
     <Preloader pct={0} />
-    <Header health={10} score={0} />
+    <Header health={10} score={0} currentStage={1} />
     <div class="game-over" style="position:fixed; inset:0; display:none; align-items:center; flex-direction:column; justify-content:center; z-index:2000; background:rgba(0,0,0,0.6);">
       <h2 style="color:#ff4d4d; font-size:8rem; text-shadow:0 0 12px rgba(255,0,0,0.7); margin-bottom:24px;">Game Over</h2>
       <div style="display:flex; gap:16px;">

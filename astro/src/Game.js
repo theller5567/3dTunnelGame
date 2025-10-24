@@ -88,7 +88,7 @@ export class Game {
     this.lookAtSmoothed = new THREE.Vector3();
     this._isRunning = false;
     this.health = 10;
-    this.score = 35;
+    this.score = 45;
     this.currentStage = 1;
     this.stage2score = 50;
     this.stage3score = 100;
@@ -98,9 +98,87 @@ export class Game {
     // Stage config (default). Each entry corresponds to advancing INTO stage N+2.
     // Example: stages[0] is config applied when entering Stage 2
     this.stages = [
-      { threshold: 50, spawn: { boxes: 220, spheres: 220, gates: 16 }, speedDelta: 0.03, enableMovers: false, movementSpeedScale: 1.0 }, //stage 2
-      { threshold: 100, spawn: { boxes: 260, spheres: 260, gates: 20 }, speedDelta: 0.00, enableMovers: true, movementSpeedScale: 1.2, lasers: true }, //stage 3
-      { threshold: 200, spawn: { boxes: 300, spheres: 300, gates: 24 }, speedDelta: 0.06, enableMovers: true, movementSpeedScale: 1.4, lasers: true, laserAmount: 2, bgmSrc: 'assets/soundFX/victory-awaits-in-the-gaming-universe_astronaut-265184.mp3' } //stage 4
+      { //stage 2
+        threshold: 50,
+        spawn: { boxes: 220, spheres: 220, gates: 16 },
+        speedDelta: 0.03,
+        enableMovers: false,
+        movementSpeedScale: 1.0,
+        gates: {
+          radiusMin: 0.22,     // min ring radius for spawns in this stage
+          radiusMax: 0.28,     // max ring radius
+          movers: true,       // gates stay static in stage 2
+          moveSpeed: 0.6,      // not used when movers=false
+          moveAmplitude: 0.18   // not used when movers=false
+        }
+      },
+      { //stage 3
+        threshold: 100,
+        spawn: { boxes: 260, spheres: 260, gates: 20 },
+        speedDelta: 0.00,
+        enableMovers: true,
+        movementSpeedScale: 1.2,
+        lasers: true,
+        gates: {
+          radiusMin: 0.10,
+          radiusMax: 0.20,
+          movers: false,        // gates stay static in stage 3
+          moveSpeed: 0.6,      // higher = faster drift
+          moveAmplitude: 0.18  // how far gates can drift in cross-section
+        }
+      },
+      { //stage 4
+        threshold: 200,
+        spawn: { boxes: 300, spheres: 300, gates: 24 },
+        speedDelta: 0.06,
+        enableMovers: true,
+        movementSpeedScale: 1.4,
+        lasers: true,
+        laserAmount: 2,
+        bgmSrc: 'assets/soundFX/victory-awaits-in-the-gaming-universe_astronaut-265184.mp3',
+        gates: {
+          radiusMin: 0.18,
+          radiusMax: 0.24,
+          movers: true,
+          moveSpeed: 0.9,
+          moveAmplitude: 0.22
+        }
+      },
+      { //stage 5
+        threshold: 400,
+        spawn: { boxes: 400, spheres: 300, gates: 24 },
+        speedDelta: 0.06,
+        enableMovers: true,
+        movementSpeedScale: 1.4,
+        lasers: true,
+        laserAmount: 3,
+        //bgmSrc: 'assets/soundFX/victory-awaits-in-the-gaming-universe_astronaut-265184.mp3',
+        gates: {
+          radiusMin: 0.16,
+          radiusMax: 0.22,
+          movers: true,
+          moveSpeed: 0.9,
+          moveAmplitude: 0.22
+        }
+      },
+      { //stage 6
+        threshold: 400,
+        spawn: { boxes: 500, spheres: 320, gates: 30 },
+        speedDelta: 0.06,
+        enableMovers: true,
+        movementSpeedScale: 1.4,
+        lasers: true,
+        laserAmount: 4,
+        bgmSrc: 'assets/soundFX/ultimate-gaming-soundtrack-for-legends_astronaut-272122.mp3',
+        gates: {
+          radiusMin: 0.16,
+          radiusMax: 0.22,
+          movers: true,
+          moveSpeed: 0.9,
+          moveAmplitude: 0.22
+        }
+      }
+
     ];
     this.movementSpeedScale = 1.0;
     this._bgmBuffers = {};
@@ -111,9 +189,9 @@ export class Game {
     // Player group and lights
     const player = new THREE.Group();
     scene.add(player);
-    const playerLight = new THREE.PointLight(0xffffff, 3.0, 10, 1); playerLight.position.set(0, 0.15, 0.3); player.add(playerLight);
+    //const playerLight = new THREE.PointLight(0xffffff, 3.0, 10, 1); playerLight.position.set(0, 0.15, 0.3); player.add(playerLight);
     const playerBackLight = new THREE.PointLight(0x88aaff, 1.5, 8, 1); playerBackLight.position.set(0, -0.1, -0.4); player.add(playerBackLight);
-    const playerHemi = new THREE.HemisphereLight(0xffffff, 0x334455, 1.0); player.add(playerHemi);
+    //const playerHemi = new THREE.HemisphereLight(0xffffff, 0x334455, 1.0); player.add(playerHemi);
 
     // Tube geometry and helpers
     const tubeGeometry = new THREE.TubeGeometry(spline, 222, 0.5, 16, true);
@@ -517,6 +595,23 @@ export class Game {
         }
       });
       player.add(model);
+      // keep a handle to the ship model and cache original material tints per mesh
+      this.ctx.shipModel = model;
+      try {
+        model.traverse((obj) => {
+          if (!obj || !obj.isMesh || !obj.material) return;
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const m of mats) {
+            if (!m) continue;
+            obj.userData._orig = obj.userData._orig || {};
+            if (m.color && !obj.userData._orig.color) obj.userData._orig.color = m.color.clone();
+            if (m.emissive && !obj.userData._orig.emissive) obj.userData._orig.emissive = m.emissive.clone();
+            if (typeof m.emissiveIntensity === 'number' && obj.userData._orig.emissiveIntensity == null) {
+              obj.userData._orig.emissiveIntensity = m.emissiveIntensity;
+            }
+          }
+        });
+      } catch(_){}
       this.markAssetLoaded();
     }, undefined, (err) => {
       try { console.warn('[Game] Model failed to load, continuing without it:', err); } catch(_){}
@@ -841,7 +936,9 @@ export class Game {
       const b = Number(spawn.boxes || 0);
       const s = Number(spawn.spheres || 0);
       if (b || s) this.spawnObstacles(b, s, SAFE_START_U);
-      if (gateSystem && gateSystem.spawn && Number(spawn.gates || 0)) gateSystem.spawn(Number(spawn.gates), SAFE_START_U);
+      if (gateSystem && gateSystem.spawn && Number(spawn.gates || 0)) {
+        gateSystem.spawn(Number(spawn.gates), SAFE_START_U, cfg.gates || {});
+      }
       if (cfg.enableMovers) this._moversEnabled = true;
       if (this.tryStartBgm) this.tryStartBgm();
       this._stageTransition = false;
@@ -934,6 +1031,8 @@ export class Game {
         this.ctx && this.checkCollisions && this.checkCollisions(gate);
       } catch(_){ }
       try { this.updateMovers(dt, () => this.currentStage); } catch(_){ }
+      // animate moving gates if enabled
+      try { if (this.ctx && this.ctx.gateSystem && this.ctx.gateSystem.update) this.ctx.gateSystem.update(t, dt); } catch(_){ }
       // lasers
       try {
         if (this.lasersEnabled && this.ctx && this.ctx.laserSystem) {
@@ -1045,19 +1144,23 @@ export class Game {
     for (let i = 0; i < boxCount; i++) {
       const size = Math.random() * (0.1 - 0.01) + 0.01;
       const geom = new THREE.BoxGeometry(size, size, size);
-      const u = startU + ((i + Math.random()) / Math.max(1, boxCount)) * (1 - startU);
+      const u = startU + ((i + Math.random()) / Math.max(1, boxCount)) * (1 - startU);//u:Parametric position along the tube spline (0..1). Where along the tunnel the object sits.
       const center = path.getPointAt(u);
       const idx = Math.floor(u * frames.tangents.length);
       const normal = frames.normals[idx % frames.normals.length].clone();
       const binormal = frames.binormals[idx % frames.binormals.length].clone();
       const r = THREE.MathUtils.randFloat(0.05, maxR * 0.9);
       const ang = Math.random() * Math.PI * 2;
-      const ox = Math.cos(ang) * r;
-      const oy = Math.sin(ang) * r;
+      const ox = Math.cos(ang) * r;//ox: Offset along the local normal axis of the tube cross‑section (radial X offset from center).
+      const oy = Math.sin(ang) * r;//oy: Offset along the local binormal axis of the tube cross‑section (radial Y offset from center).
       const pos = center.clone().add(normal.clone().multiplyScalar(ox)).add(binormal.clone().multiplyScalar(oy));
       const mat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 100 });
       const mesh = new THREE.Mesh(geom, mat);
       mesh.position.copy(pos);
+      /*
+      vx: Velocity for ox (how fast the offset changes over time; used by movers).
+      vy: Velocity for oy (how fast the offset changes over time; used by movers).
+      */
       mesh.userData = { size, u, ox, oy, vx: THREE.MathUtils.randFloatSpread(0.4), vy: THREE.MathUtils.randFloatSpread(0.4), movable: true };
       boxes.push(mesh);
       scene.add(mesh);
@@ -1217,6 +1320,59 @@ export class Game {
     }
   }
 
+  // Set a temporary tint on the ship model by adjusting emissive/color
+  setShipTint(colorHex = 0xff3333, minEmissiveIntensity = 0.9) {
+    const model = this.ctx && this.ctx.shipModel;
+    if (!model) return;
+    try {
+      model.traverse((obj) => {
+        if (!obj || !obj.isMesh || !obj.material) return;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          if (!m) continue;
+          if (m.emissive) {
+            m.emissive.setHex(colorHex);
+            if (typeof m.emissiveIntensity === 'number') {
+              m.emissiveIntensity = Math.max(m.emissiveIntensity || 0, minEmissiveIntensity);
+            }
+          } else if (m.color) {
+            m.color.setHex(colorHex);
+          }
+          m.needsUpdate = true;
+        }
+      });
+    } catch(_){}
+  }
+
+  // Restore original material tint cached at load time
+  restoreShipTint() {
+    const model = this.ctx && this.ctx.shipModel;
+    if (!model) return;
+    try {
+      model.traverse((obj) => {
+        if (!obj || !obj.isMesh || !obj.material || !obj.userData || !obj.userData._orig) return;
+        const { color, emissive, emissiveIntensity } = obj.userData._orig;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          if (!m) continue;
+          if (m.color && color) m.color.copy(color);
+          if (m.emissive && emissive) m.emissive.copy(emissive);
+          if (typeof emissiveIntensity === 'number' && typeof m.emissiveIntensity === 'number') {
+            m.emissiveIntensity = emissiveIntensity;
+          }
+          m.needsUpdate = true;
+        }
+      });
+    } catch(_){}
+  }
+
+  // One-shot damage flash
+  flashShipDamage(durationMs = 250) {
+    this.setShipTint(0xff3333, 1.1);
+    try { if (this._shipFlashTimer) clearTimeout(this._shipFlashTimer); } catch(_){ }
+    this._shipFlashTimer = setTimeout(() => { this.restoreShipTint(); }, Math.max(50, durationMs));
+  }
+
   // Collision checks migrated here
   checkCollisions(hazardsShown) {
     if (!hazardsShown) return;
@@ -1237,6 +1393,9 @@ export class Game {
         if (b.position.distanceTo(camPos) <= radius) {
           this.disintegrateBox(b);
           boxes.splice(i, 1);
+          // damage flash on ship
+          this.flashShipDamage(250);
+
           continue;
         }
         // segment-sphere intersection to avoid tunneling
@@ -1260,6 +1419,7 @@ export class Game {
             if (tHit >= 0 && tHit <= segLen) {
               this.disintegrateBox(b);
               boxes.splice(i, 1);
+              this.flashShipDamage(250);
             }
           }
         }

@@ -22,10 +22,11 @@ const gameOverEl = document.querySelector('.game-over');
 const btnPlayAgain = document.querySelector('.btn-play-again');
 const btnQuit = document.querySelector('.btn-quit');
 const barHealth = document.querySelector('.health-bar-fill');
-
+const stageText = document.querySelector('.stage-value');
 const w = window.innerWidth;
 const h = window.innerHeight;
 let health = 10;
+let currentStage = 1;
 const SPAWN_START_U = 0.08; // 0.0..1.0 param along spline; 0.15 ≈ 15% down the tube
 const OVERLAY_DURATION_MS = 800; // how long the four strips take to slide away
 const COUNTDOWN_SECONDS = 5; // keep obstacles spawn in sync with countdown
@@ -48,7 +49,7 @@ controls.enabled = false;
 // Initialize score/health display
 if (scoreText) scoreText.textContent = `0`;
 if (healthText) healthText.textContent = `${health}`;
-
+if (stageText) stageText.textContent = `${currentStage}`;
 
   startButton.addEventListener('click', (e) => {
     e.stopPropagation(); // prevent global click toggle from pausing immediately
@@ -259,7 +260,9 @@ game.ctx = {
     }
   },
   getStage: () => game.currentStage,
-  setStage: (s) => { game.currentStage = s; },
+  setStage: (s) => { game.currentStage = s; currentStage = s; if (stageText) stageText.textContent = `${s}`; },
+  getCurrentStage: () => currentStage,
+  setCurrentStage: (s) => { currentStage = s; if (stageText) stageText.textContent = `${s}`; },
   stage2score: game.stage2score,
   stage3score: game.stage3score,
   stage4score: game.stage4score

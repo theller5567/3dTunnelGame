@@ -1,0 +1,5 @@
+---
+description: Always describe what a bash command does and why we should run it before giving the bash command.
+globs:
+alwaysApply: true
+---
