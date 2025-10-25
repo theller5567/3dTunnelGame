@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.159.0';
 
 export class GateSystem {
     constructor(scene, path, spawnStartU = 0.12) {

@@ -2,7 +2,7 @@
 // - Spawns sprites (with a soft radial texture) distributed around the spline.
 // - Animates gentle drift along the tunnel and radial sway.
 // - Supports a global color override or following a light color.
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.159.0';
 import { createCircleSpriteTexture } from './utils.js';
 
 export class CloudSystem {

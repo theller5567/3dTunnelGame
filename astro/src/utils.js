@@ -1,5 +1,5 @@
 // Utilities shared across modules
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.159.0';
 
 // createCircleSpriteTexture: generate a soft radial gradient texture.
 // Used for particles and cloud sprites to get a fog-like look.

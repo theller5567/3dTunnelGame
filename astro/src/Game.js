@@ -1,12 +1,12 @@
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.159.0';
 import { CloudSystem } from './clouds.js';
 import { GateSystem } from './gates.js';
 import { LaserSystem } from './lasers.js';
 import { createCircleSpriteTexture } from './utils.js';
-import { EffectComposer } from 'jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'jsm/postprocessing/UnrealBloomPass.js';
-import { ColladaLoader } from 'jsm/loaders/ColladaLoader.js';
+import { EffectComposer } from 'https://esm.sh/three@0.159.0/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'https://esm.sh/three@0.159.0/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'https://esm.sh/three@0.159.0/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { ColladaLoader } from 'https://esm.sh/three@0.159.0/examples/jsm/loaders/ColladaLoader.js';
 
 
 export class GameLoop {

@@ -1,8 +1,8 @@
-// Core Three.js library
-import * as THREE from 'three';
+// Core Three.js library (CDN ESM to avoid bundler requirements)
+import * as THREE from 'https://esm.sh/three@0.159.0';
 import spline from '../spline.js';
 import { Game } from '../Game.js';
-import { OrbitControls } from 'jsm/controls/OrbitControls.js';
+import { OrbitControls } from 'https://esm.sh/three@0.159.0/examples/jsm/controls/OrbitControls.js';
 
 
 const scoreText = document.querySelector('.score-value');
