@@ -2,7 +2,6 @@
 import '../styles.scss';
 import Preloader from '../components/Preloader.astro';
 import Header from '../components/Header.astro';
-import gameScript from '../scripts/index.js?url';
 ---
 <html lang="en">
   <head>
@@ -44,6 +43,8 @@ import gameScript from '../scripts/index.js?url';
       <h2>Stage 3</h2>
     </section>
 
-    <script type="module" src={gameScript}></script>
+    <script type="module">
+      import '../scripts/index.js';
+    </script>
   </body>
 </html>
