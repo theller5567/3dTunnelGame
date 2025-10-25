@@ -88,7 +88,7 @@ export class Game {
     this.lookAtSmoothed = new THREE.Vector3();
     this._isRunning = false;
     this.health = 10;
-    this.score = 45;
+    this.score = 0;
     this.currentStage = 1;
     this.stage2score = 50;
     this.stage3score = 100;
