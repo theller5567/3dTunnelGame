@@ -6,7 +6,7 @@ import { createCircleSpriteTexture } from './utils.js';
 import { EffectComposer } from 'https://esm.sh/three@0.159.0/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'https://esm.sh/three@0.159.0/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'https://esm.sh/three@0.159.0/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { ColladaLoader } from 'https://esm.sh/three@0.159.0/examples/jsm/loaders/ColladaLoader.js';
+import { GLTFLoader } from 'https://esm.sh/three@0.159.0/examples/jsm/loaders/GLTFLoader.js';
 
 
 export class GameLoop {
@@ -565,58 +565,23 @@ export class Game {
   }
 
   loadModel() {
-    const {
-      assetLoadingManager,
-      player,
-      shipScale = 0.02,
-      shipYaw = 0,
-      shipPitch = -(Math.PI / 2),
-      shipRoll = Math.PI / 2,
-      shipForwardAdjustY = Math.PI,
-    } = this.ctx || {};
-    if (!player) { try { console.warn('[Game] loadModel skipped: missing player'); } catch(_){} return; }
-    const loader = new ColladaLoader(assetLoadingManager);
-    loader.load('assets/models/ship-new.dae', (collada) => {
-      try { console.log('[Game] Model loaded'); } catch(_e) {}
-      const model = collada.scene || collada;
+    const { assetLoadingManager, player, shipScale=0.02, shipYaw=0,
+            shipPitch=-(Math.PI/2), shipRoll=Math.PI, shipForwardAdjustY=Math.PI } = this.ctx || {};
+    if (!player) return;
+
+    const loader = new GLTFLoader(assetLoadingManager);
+    loader.load('assets/models/ship-new.glb', (gltf) => {
+      const model = gltf && (gltf.scene || (Array.isArray(gltf.scenes) ? gltf.scenes[0] : null));
+      if (!model) { this.markAssetLoaded(); return; }
+
       model.scale.set(shipScale, shipScale, shipScale);
-      model.rotation.set(shipPitch, shipYaw + shipForwardAdjustY, shipRoll);
-      model.traverse((obj) => {
-        if (obj.isMesh && obj.material) {
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-          mats.forEach((m) => {
-            if (m.color && m.color.getHex && m.color.getHex() === 0x000000) m.color.setHex(0x6666ff);
-            if (m.emissive) {
-              m.emissive.setHex(0x111111);
-              if (typeof m.emissiveIntensity === 'number') m.emissiveIntensity = 0.8;
-            }
-            m.needsUpdate = true;
-          });
-        }
-      });
+      // Restore the same orientation you had previously
+      // Apply a roll offset so wings are horizontal (east-west)
+      model.rotation.set(shipPitch, (shipYaw - Math.PI/2) + shipForwardAdjustY, shipRoll);
       player.add(model);
-      // keep a handle to the ship model and cache original material tints per mesh
       this.ctx.shipModel = model;
-      try {
-        model.traverse((obj) => {
-          if (!obj || !obj.isMesh || !obj.material) return;
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-          for (const m of mats) {
-            if (!m) continue;
-            obj.userData._orig = obj.userData._orig || {};
-            if (m.color && !obj.userData._orig.color) obj.userData._orig.color = m.color.clone();
-            if (m.emissive && !obj.userData._orig.emissive) obj.userData._orig.emissive = m.emissive.clone();
-            if (typeof m.emissiveIntensity === 'number' && obj.userData._orig.emissiveIntensity == null) {
-              obj.userData._orig.emissiveIntensity = m.emissiveIntensity;
-            }
-          }
-        });
-      } catch(_){}
       this.markAssetLoaded();
-    }, undefined, (err) => {
-      try { console.warn('[Game] Model failed to load, continuing without it:', err); } catch(_){}
-      this.markAssetLoaded();
-    });
+    }, undefined, () => this.markAssetLoaded());
   }
 
   updateCamera(t, dt) {
