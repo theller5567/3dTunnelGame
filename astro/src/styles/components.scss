@@ -1,7 +1,7 @@
 .start-button {
-  background-color: white;
+  background-color: #2ee59d;
   color: black;
-  border: none;
+  border: 1px solid #2ee59d;
   padding: 0.5rem 2rem;
   margin-block: 1rem;
   border-radius: 5px;
@@ -58,3 +58,50 @@ header {
 .health-bar { width: 220px; height: 12px; background: rgba(255,255,255,0.12); border-radius: 6px; overflow: hidden; margin-top: 4px; }
 .health-bar-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #2ee59d, #ffcc00); box-shadow: 0 0 12px rgba(46,229,157,0.5) inset; transition: width 200ms ease; }
 
+button.rules {
+  background-color: transparent;
+  color: white;
+  border: 1px solid #2ee59d;
+  padding: 0.5rem 2rem;
+  margin-block: 1rem;
+  border-radius: 5px;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 100vw;
+  width: fit-content;
+}
+
+.exit-button {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background-color: #2ee59d;
+  color: black;
+  border: 1px solid #2ee59d;
+  padding: 0.5rem 2rem;
+  margin-block: 1rem;
+  border-radius: 5px;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 100vw;
+  width: fit-content;
+}
+
+.rules-content {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+  background-color: rgba(0, 0, 0, 0.8);
+  border-radius: 10px;
+  color: white;
+  font-size: 1.2rem;
+  font-weight: bold;
+  text-align: left;
+  line-height: 1.5;
+  text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+  li {
+    margin-bottom: 1rem;
+  }
+}

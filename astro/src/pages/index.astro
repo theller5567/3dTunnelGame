@@ -21,6 +21,20 @@ import Header from '../components/Header.astro';
       </div>
     </div>
     <div class="game-canvas"></div>
+    <div class="rules-modal">
+      <div class="rules-content">
+        <button class="exit-button">Exit</button>
+        <h2>Rules</h2>
+        <ul>
+          <li>Get to the end of the tunnel to win.</li>
+          <li>Use the mouse to move amd click to shoot the enemies.</li>
+          <li>Avoid the obstacles and enemies.</li>
+          <li>Collect the spheres to increase your score.</li>
+          <li>Upon reaching level 3, you will gain a laser gun to shoot at the enemies.</li>
+          <li>Fly through the gates to increase your score by 5 points.</li>
+        </ul>
+      </div>
+    </div>
     <div class="container">
       <h1 class="title">Lucas Revenge
         <div class="aurora">
@@ -31,17 +45,16 @@ import Header from '../components/Header.astro';
         </div>
       </h1>
       <p>Ride the beat. Rule the tunnel.</p>
+      <div class="btn-group">
       <button class="start-button">Start</button>
+      <button class="rules">Rules</button>
     </div>
     <div class="countdown">
       <h1>5</h1>
     </div>
-    <div class="level-up" style="display:none;">
-      <h2>Stage 2</h2>
+    <!-- <div class="level-up" style="display:none;">
+      <h2>Stage 2</h2> -->
     </div>
-    <section class="section2">
-      <h2>Stage 3</h2>
-    </section>
 
     <script src="../scripts/index.js"></script>
   </body>

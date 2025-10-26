@@ -23,6 +23,23 @@ const btnPlayAgain = document.querySelector('.btn-play-again');
 const btnQuit = document.querySelector('.btn-quit');
 const barHealth = document.querySelector('.health-bar-fill');
 const stageText = document.querySelector('.stage-value');
+const btnRules = document.querySelector('.rules');
+const exitButton = document.querySelector('.exit-button');
+const rulesModal = document.querySelector('.rules-modal');
+btnRules.addEventListener('click', () => {
+  console.log('[index] Rules clicked');
+  // show the rules modal
+  rulesModal.classList.add('show');
+ 
+});
+exitButton.addEventListener('click', () => {
+  console.log('[index] Exit clicked');
+  // show the rules modal
+  rulesModal.classList.remove('show');
+  setTimeout(() => {
+    container.style.display = 'flex';
+  }, 300);
+});
 const w = window.innerWidth;
 const h = window.innerHeight;
 let health = 10;

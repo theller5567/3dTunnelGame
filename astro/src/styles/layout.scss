@@ -1,3 +1,10 @@
+@property --angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+
 .game-canvas {
   position: fixed;
   top: 0;
@@ -22,15 +29,18 @@
   background-position: center;
   background-repeat: no-repeat;
   background-blend-mode: lighten;
+  background-color: #000;
   padding: 0;
   top: 0;
   left: 0;
   z-index: 10002;
+  opacity: 1;
+  transition: opacity 0.3s ease;
 }
 
 section {
-  position: relative;
-  top: 100vh;
+  position: absolute;
+  inset: 0;
   width: 100vw;
   height: 100vh;
   background-color: rgb(55, 24, 105);
@@ -38,5 +48,45 @@ section {
   justify-content: center;
   align-items: center;
   font-size: 4rem;
+  z-index: 10001;
 }
 
+.rules-modal {
+  position: absolute;
+  top: -100vh;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(0, 0, 0, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10003;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+
+  opacity: 0;
+  transition: all 0.3s ease;
+  overflow: hidden;
+  .rules-content {
+    position: relative;
+    z-index: 1;
+    overflow: hidden;
+    padding: 2rem;
+    border: 3px solid transparent;
+    background: linear-gradient(black 0 0) padding-box,
+    conic-gradient(from var(--angle), #2ee59d, #ffcc00, #e54cff, #2ee59d) border-box;
+    animation: spin 10s linear infinite;
+    @keyframes spin {
+      to {
+        --angle: 360deg;
+      }
+    }
+ 
+} &.show {
+  opacity: 1;
+  top: 0;
+}
+}

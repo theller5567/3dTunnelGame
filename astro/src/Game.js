@@ -57,7 +57,7 @@ export class Game {
     this.loaderFillEl = null;
     this.tryStartBgm = null;
     this.startGameCb = null;
-    this.minPreloadMs = 2000;
+    this.minPreloadMs = 1000;
     this.preloaderShownAt = 0;
     // particles
     this.particleSystems = [];
