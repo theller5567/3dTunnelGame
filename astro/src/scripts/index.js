@@ -26,6 +26,9 @@ const stageText = document.querySelector('.stage-value');
 const btnRules = document.querySelector('.rules');
 const exitButton = document.querySelector('.exit-button');
 const rulesModal = document.querySelector('.rules-modal');
+const quitButton = document.querySelector('.quit-button');
+// use existing Game Over quit button
+
 btnRules.addEventListener('click', () => {
   console.log('[index] Rules clicked');
   // show the rules modal
@@ -40,6 +43,7 @@ exitButton.addEventListener('click', () => {
     container.style.display = 'flex';
   }, 300);
 });
+
 const w = window.innerWidth;
 const h = window.innerHeight;
 let health = 10;
@@ -145,22 +149,26 @@ if (stageText) stageText.textContent = `${currentStage}`;
       tryStartBgm();
     });
   }
-  if (btnQuit) {
-    btnQuit.addEventListener('click', () => {
-      // Fully quit back to title
-      if (gameOverEl && gameOverEl.style) gameOverEl.style.display = 'none';
-      isRunning = false;
-      game.resetToStart();
-      // Hide canvas UI; show title and header appropriately
-      const mount = document.body.querySelector('.game-canvas');
-      if (mount) mount.innerHTML = '';
-      header.style.display = 'none';
-      container.style.display = 'flex';
-      startButton.style.display = 'inline-block';
-      h1Text.style.opacity = 1;
-      hasStarted = false;
-    });
-  }
+if (btnQuit) {
+  btnQuit.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Fully quit back to title: tear down game instance and UI
+    try { if (game && game.pause) game.pause(); } catch(_){}
+    try { if (game && game.ctx && game.ctx.bgm && game.ctx.bgm.isPlaying) game.ctx.bgm.stop(); } catch(_){}
+    // Remove renderer canvas
+    const mount = document.body.querySelector('.game-canvas');
+    if (mount) mount.innerHTML = '';
+    // Reset flags
+    isRunning = false;
+    hasStarted = false;
+    // Hide overlays and header; show landing
+    if (gameOverEl && gameOverEl.style) gameOverEl.style.display = 'none';
+    if (header && header.style) header.style.display = 'none';
+    if (container && container.style) container.style.display = 'flex';
+    if (startButton && startButton.style) startButton.style.display = 'inline-block';
+    if (h1Text && h1Text.style) h1Text.style.opacity = 1;
+  });
+}
 
 
 // allow user to move within the tube cross-section using mouse position (moved to Game)

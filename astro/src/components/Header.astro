@@ -7,14 +7,17 @@ const { health = 10, score = 0, currentStage = 1 } = Astro.props;
       <button class="pause-button">Pause</button>
       <button class="restart-button">Restart</button>
     </div>
+    <div class="main-controls">
     <div class="health">
       <h3>Health: <span class="health-value">{health}</span></h3>
-      <div class="health-bar" aria-label="health"><div class="health-bar-fill"></div></div>
+    </div>
+    <div class="score">
+      <h3>Score: <span class="score-value">{score}</span></h3>
     </div>
     <div class="stageLevel">
       <h3>Stage: <span class="stage-value">{currentStage}</span></h3>
     </div>  
-    <div class="score">
-      <h3>Score: <span class="score-value">{score}</span></h3>
     </div>
+    <button class="btn-quit">Quit</button>
+    <div class="health-bar" aria-label="health"><div class="health-bar-fill"></div></div>
 </header>

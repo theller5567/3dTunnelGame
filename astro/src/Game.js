@@ -162,7 +162,7 @@ export class Game {
         }
       },
       { //stage 6
-        threshold: 400,
+        threshold: 500,
         spawn: { boxes: 500, spheres: 320, gates: 30 },
         speedDelta: 0.06,
         enableMovers: true,
@@ -760,7 +760,9 @@ export class Game {
     this._isRunning = false;
     // Reset health immediately for UI; actual restart is triggered by buttons
     this.health = 10;
+    this.score = 0;
     if (typeof this.ctx?.setHealth === 'function') this.ctx.setHealth(this.health);
+    if (typeof this.ctx?.setScore === 'function') this.ctx.setScore(this.score);
     this._emitHealth();
   }
 
@@ -1074,7 +1076,7 @@ export class Game {
     this._isRunning = false;
     try { if (typeof onRunningChange === 'function') onRunningChange(false); } catch(_){}
     if (typeof pauseLoop === 'function') pauseLoop();
-    try { if (bgm && bgm.isPlaying) bgm.pause(); } catch(_){ }
+    try { if (bgm && bgm.isPlaying) bgm.stop(); } catch(_){ }
   }
 
   resume() {
@@ -1086,7 +1088,7 @@ export class Game {
     if (typeof tryStartBgm === 'function') tryStartBgm();
   }
 
-  startNewGame() {
+  async startNewGame() {
     const { setScore, setHazardsShown, setHealth } = this.ctx || {};
     if (typeof setScore === 'function') setScore(0);
     this.health = 10;
@@ -1097,6 +1099,17 @@ export class Game {
     this.resetToStart();
     this._isRunning = false;
     this.start();
+    try {
+      const { audioListener, bgm } = this.ctx || {};
+      if (audioListener?.context?.state === 'suspended') {
+        await audioListener.context.resume();
+      }
+      if (bgm?.buffer && !bgm.isPlaying) {
+        bgm.setLoop(true);
+        bgm.setVolume(this._getTargetBgmVolume());
+        bgm.play();
+      }
+    } catch (_) {}
   }
 
   spawnObstacles(boxCount = 150, sphereCount = 170, startU = 0.12) {
