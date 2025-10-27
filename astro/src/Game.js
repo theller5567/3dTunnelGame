@@ -1083,7 +1083,7 @@ export class Game {
     const { resumeLoop, tryStartBgm, onRunningChange } = this.ctx || {};
     if (this._isRunning) return;
     this._isRunning = true;
-    try { if (typeof onRunningChange === 'function') onRunningChange(true); } catch(_){}
+    try { if (typeof onRunningChange === 'function') onRunningChange(true); } catch(_){ }
     if (typeof resumeLoop === 'function') resumeLoop();
     if (typeof tryStartBgm === 'function') tryStartBgm();
   }
@@ -1467,6 +1467,38 @@ export class Game {
         // removal is handled inside GateSystem after callback delay
       });
     }
+  }
+
+  // Fully stop gameplay, audio, and free GPU/scene resources
+  quit() {
+    const { pauseLoop, scene } = this.ctx || {};
+    if (typeof pauseLoop === 'function') pauseLoop();
+    this._isRunning = false;
+    // stop audio
+    try { if (this.ctx?.bgm && this.ctx.bgm.isPlaying) this.ctx.bgm.stop(); } catch(_){}
+    try { if (this.ctx?.sfxPoint && this.ctx.sfxPoint.isPlaying) this.ctx.sfxPoint.stop(); } catch(_){}
+    try { if (this.ctx?.sfxExplosion && this.ctx.sfxExplosion.isPlaying) this.ctx.sfxExplosion.stop(); } catch(_){}
+    try { if (this.ctx?.sfxLazerGun && this.ctx.sfxLazerGun.isPlaying) this.ctx.sfxLazerGun.stop(); } catch(_){}
+    // clear obstacles and systems
+    try { this.clearObstacles(); } catch(_){}
+    try {
+      if (this.ctx?.laserSystem) {
+        const ls = this.ctx.laserSystem;
+        if (ls.group && scene) scene.remove(ls.group);
+        ls.items = [];
+      }
+    } catch(_){}
+    try { if (this.ctx?.cloudSystem && scene) scene.remove(this.ctx.cloudSystem.group); } catch(_){}
+    try { if (this.ctx?.gateSystem) this.ctx.gateSystem.clear(); } catch(_){}
+    // dispose composer/renderer
+    try { if (this.ctx?.composer) this.ctx.composer.passes = []; } catch(_){}
+    try { if (this.ctx?.renderer) this.ctx.renderer.dispose(); } catch(_){}
+    this.ctx = { ...this.ctx, renderer: undefined, composer: undefined };
+    // reset preloader/start gating so future starts work
+    this.loadedAssets = 0;
+    this.assetsReady = false;
+    this.overlayFinished = false;
+    this._startedFromGates = false;
   }
 }
 
